@@ -459,7 +459,7 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
                 remap_expr(element, self_names, prefix);
             }
         }
-        Expr::ChannelBounded { capacity } => remap_expr(capacity, self_names, prefix),
+        Expr::ChannelBounded { capacity, .. } => remap_expr(capacity, self_names, prefix),
         Expr::Await(inner) => remap_expr(inner, self_names, prefix),
     }
 }
@@ -563,6 +563,7 @@ fn run_file(input: &PathBuf, compiler: &str, opt: &str) {
         .args([
             opt,
             "-std=gnu11",
+            "-pthread",
             "-o",
             binary.to_str().unwrap(),
             c_file.to_str().unwrap(),
@@ -669,6 +670,7 @@ fn run_tests(input: Option<&PathBuf>, compiler: &str, opt: &str) {
             .args([
                 opt,
                 "-std=gnu11",
+                "-pthread",
                 "-o",
                 binary.to_str().unwrap(),
                 c_file.to_str().unwrap(),
@@ -880,7 +882,7 @@ fn build_project(profile: &str) {
     let output_name = "main";
     let output_path = build_dir.join(output_name);
 
-    let mut args = vec![optimization.as_str(), "-std=gnu11", "-o", output_path.to_str().unwrap()];
+    let mut args = vec![optimization.as_str(), "-std=gnu11", "-pthread", "-o", output_path.to_str().unwrap()];
     for c_file in &c_files {
         args.push(c_file.to_str().unwrap());
     }

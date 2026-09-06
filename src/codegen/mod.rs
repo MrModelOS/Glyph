@@ -81,6 +81,7 @@ impl CCodegen {
         writeln!(self.output, "#include <string.h>").unwrap();
         writeln!(self.output, "#include <stdint.h>").unwrap();
         writeln!(self.output, "#include <math.h>").unwrap();
+        writeln!(self.output, "#include <pthread.h>").unwrap();
         writeln!(self.output, "#include <sys/stat.h>").unwrap();
         writeln!(self.output, "#include <setjmp.h>").unwrap();
         writeln!(self.output, "").unwrap();
@@ -112,6 +113,16 @@ impl CCodegen {
         writeln!(self.output, "void* glyph_box_construct(int64_t tag, const void* data, int64_t size);").unwrap();
         writeln!(self.output, "void* glyph_parse_int(const char* s);").unwrap();
         writeln!(self.output, "void* glyph_parse_float(const char* s);").unwrap();
+        writeln!(self.output, "").unwrap();
+
+        writeln!(self.output, "// Concurrency (pthreads)").unwrap();
+        writeln!(self.output, "void* glyph_async_create(void* (*run)(void*), void* args);").unwrap();
+        writeln!(self.output, "void glyph_async_spawn(void* handle);").unwrap();
+        writeln!(self.output, "void* glyph_async_await(void* handle);").unwrap();
+        writeln!(self.output, "void* glyph_channel_create(int64_t capacity);").unwrap();
+        writeln!(self.output, "int glyph_channel_send(void* channel, void* payload);").unwrap();
+        writeln!(self.output, "void* glyph_channel_recv(void* channel);").unwrap();
+        writeln!(self.output, "void glyph_channel_close(void* channel);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Math").unwrap();
@@ -379,6 +390,54 @@ impl CCodegen {
             writeln!(self.output, ";").unwrap();
         }
 
+        // Async trampolines (pthread entry points) for every async function.
+        // Emitted before implementations so calls can reference them.
+        for item in &program.items {
+            match item {
+                TopLevelItem::Function {
+                    name,
+                    type_params,
+                    params,
+                    return_type,
+                    is_async,
+                    ..
+                } => {
+                    if !is_async || !type_params.is_empty() {
+                        continue;
+                    }
+                    let cname = name.replace("::", "_");
+                    let cparams: Vec<(String, Type)> = params
+                        .iter()
+                        .map(|p| (p.name.clone(), self.subst_active(&p.ty)))
+                        .collect();
+                    self.emit_async_trampoline(&cname, &cparams, return_type.as_ref())?;
+                }
+                TopLevelItem::Impl {
+                    type_name,
+                    methods,
+                    ..
+                } => {
+                    for method in methods {
+                        if !method.is_async {
+                            continue;
+                        }
+                        let full_name = format!("{}_{}", type_name, method.name);
+                        let cparams: Vec<(String, Type)> = method
+                            .params
+                            .iter()
+                            .map(|p| (p.name.clone(), self.subst_active(&p.ty)))
+                            .collect();
+                        self.emit_async_trampoline(
+                            &full_name,
+                            &cparams,
+                            method.return_type.as_ref(),
+                        )?;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // Function implementations
         for item in &program.items {
             match item {
@@ -594,6 +653,243 @@ impl CCodegen {
         Ok(())
     }
 
+    fn async_trampoline_name(cname: &str) -> String {
+        format!("{}_async_trampoline", cname)
+    }
+
+    fn async_args_name(cname: &str) -> String {
+        format!("{}_async_args", cname)
+    }
+
+    /// If `n` names an async function, return its C name + concrete params.
+    fn lookup_async_fn(&self, n: &str) -> Option<(String, Vec<(String, Type)>)> {
+        let key = n.replace("::", "_");
+        let sig = self.functions.get(&key)?;
+        if !sig.is_async {
+            return None;
+        }
+        let cparams: Vec<(String, Type)> = sig
+            .params
+            .iter()
+            .map(|(nm, ty, _)| (nm.clone(), self.subst_active(ty)))
+            .collect();
+        Some((key, cparams))
+    }
+
+    /// Is the payload of this type passed by pointer already (no boxing needed)?
+    fn type_is_pointer_payload(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::String
+                | Type::Bytes
+                | Type::List(_)
+                | Type::Map(_, _)
+                | Type::Result(_, _)
+                | Type::Option(_)
+                | Type::Async(_)
+                | Type::Channel(_)
+                | Type::Ref(_)
+        )
+    }
+
+    /// Is this a plain value type stored in a heap cell when crossing threads?
+    fn type_is_cell_payload(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Int64 | Type::UInt64 | Type::Float64 | Type::Bool
+        )
+    }
+
+    /// Emit the args struct + pthread trampoline for an async function.
+    /// The trampoline calls `cname`, boxes a non-Void result, and returns it.
+    fn emit_async_trampoline(
+        &mut self,
+        cname: &str,
+        params: &[(String, Type)],
+        return_type: Option<&Type>,
+    ) -> Result<(), CodegenError> {
+        let args_name = Self::async_args_name(cname);
+        writeln!(self.output, "typedef struct {{").unwrap();
+        self.indent += 1;
+        for (pname, pty) in params {
+            self.emit_indent();
+            writeln!(self.output, "{} {};", self.type_to_c(pty), pname).unwrap();
+        }
+        self.indent -= 1;
+        writeln!(self.output, "}} {};", args_name).unwrap();
+
+        writeln!(
+            self.output,
+            "static void* {}(void* _p) {{",
+            Self::async_trampoline_name(cname)
+        )
+        .unwrap();
+        self.indent += 1;
+        self.emit_indent();
+        writeln!(self.output, "{}* _a = ({}*)_p;", args_name, args_name).unwrap();
+
+        let ret = return_type.map(|t| self.subst_active(t));
+        // Build the argument list once.
+        let mut call = format!("{}(", cname);
+        for (i, (pname, _)) in params.iter().enumerate() {
+            if i > 0 {
+                call.push_str(", ");
+            }
+            call.push_str(&format!("_a->{}", pname));
+        }
+        call.push(')');
+
+        match ret {
+            None | Some(Type::Void) => {
+                self.emit_indent();
+                writeln!(self.output, "{};", call).unwrap();
+                self.emit_indent();
+                writeln!(self.output, "free(_a);").unwrap();
+                self.emit_indent();
+                writeln!(self.output, "return NULL;").unwrap();
+            }
+            Some(t) => {
+                let c_ret = self.type_to_c(&t);
+                self.emit_indent();
+                writeln!(self.output, "{} _r = {};", c_ret, call).unwrap();
+                self.emit_indent();
+                writeln!(self.output, "free(_a);").unwrap();
+                self.emit_indent();
+                if Self::type_is_pointer_payload(&t) {
+                    writeln!(self.output, "return (void*)_r;").unwrap();
+                } else if Self::type_is_cell_payload(&t) {
+                    writeln!(self.output, "{}* _o = ({}*)malloc(sizeof({}));", c_ret, c_ret, c_ret).unwrap();
+                    self.emit_indent();
+                    writeln!(self.output, "*_o = _r;").unwrap();
+                    self.emit_indent();
+                    writeln!(self.output, "return (void*)_o;").unwrap();
+                } else {
+                    // Custom struct / array: copy the value onto the heap.
+                    writeln!(self.output, "void* _o = malloc(sizeof(_r));").unwrap();
+                    self.emit_indent();
+                    writeln!(self.output, "memcpy(_o, &_r, sizeof(_r));").unwrap();
+                    self.emit_indent();
+                    writeln!(self.output, "return _o;").unwrap();
+                }
+            }
+        }
+
+        self.indent -= 1;
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "").unwrap();
+
+        Ok(())
+    }
+
+    /// Emit `glyph_async_create(trampoline, boxed_args)` for an async call.
+    fn emit_async_call(
+        &mut self,
+        cname: &str,
+        params: &[(String, Type)],
+        args: &[Expr],
+    ) -> Result<(), CodegenError> {
+        let args_name = Self::async_args_name(cname);
+        write!(
+            self.output,
+            "glyph_async_create({}, ({{ ",
+            Self::async_trampoline_name(cname)
+        )
+        .unwrap();
+        write!(
+            self.output,
+            "{}* _a = ({}*)malloc(sizeof({})); ",
+            args_name, args_name, args_name
+        )
+        .unwrap();
+        for ((pname, pty), arg) in params.iter().zip(args.iter()) {
+            if matches!(pty, Type::Array(_, _)) {
+                write!(self.output, "memcpy(_a->{}, ", pname).unwrap();
+                self.emit_expression(arg)?;
+                write!(self.output, ", sizeof(_a->{})); ", pname).unwrap();
+            } else {
+                write!(self.output, "_a->{} = ", pname).unwrap();
+                self.emit_expression(arg)?;
+                write!(self.output, "; ").unwrap();
+            }
+        }
+        write!(self.output, "_a; }}))").unwrap();
+        Ok(())
+    }
+
+    /// Emit `ch.recv()` as an `Option<T>` box: None when the channel is
+    /// closed and drained, otherwise Some(payload).
+    fn emit_channel_recv(&mut self, object: &Expr, elem: &Type) -> Result<(), CodegenError> {
+        write!(self.output, "({{ void* _cp = glyph_channel_recv(").unwrap();
+        self.emit_expression(object)?;
+        write!(self.output, "); ").unwrap();
+        write!(
+            self.output,
+            "_cp == NULL ? glyph_box_construct(0, NULL, 0) : ({{ "
+        )
+        .unwrap();
+        let c_elem = self.type_to_c(elem);
+        if Self::type_is_pointer_payload(elem) {
+            write!(
+                self.output,
+                "__auto_type _p = ({})_cp; glyph_box_construct(1, &_p, sizeof(_p)); ",
+                c_elem
+            )
+            .unwrap();
+        } else {
+            // Value type or custom struct: copy out of the cell, then free it.
+            write!(
+                self.output,
+                "{} _v = *({}*)_cp; free(_cp); __auto_type _p = _v; glyph_box_construct(1, &_p, sizeof(_p)); ",
+                c_elem, c_elem
+            )
+            .unwrap();
+        }
+        write!(self.output, "}}); }})").unwrap();
+        Ok(())
+    }
+
+    /// Emit `handle await` unboxed to the handle's payload type T.
+    fn emit_await(&mut self, inner: &Expr, payload: &Type) -> Result<(), CodegenError> {
+        match payload {
+            Type::Void => {
+                write!(self.output, "glyph_async_await(").unwrap();
+                self.emit_expression(inner)?;
+                write!(self.output, ")").unwrap();
+            }
+            t if Self::type_is_cell_payload(t) => {
+                // NB: the cell is owned by the handle (cached for repeated
+                // awaits) and must NOT be freed here.
+                let c = self.type_to_c(t);
+                write!(self.output, "({{ void* _ap = glyph_async_await(").unwrap();
+                self.emit_expression(inner)?;
+                write!(
+                    self.output,
+                    "); {} _av = _ap ? *({}*)_ap : 0; _av; }})",
+                    c, c
+                )
+                .unwrap();
+            }
+            t if Self::type_is_pointer_payload(t) => {
+                write!(self.output, "({})glyph_async_await(", self.type_to_c(t)).unwrap();
+                self.emit_expression(inner)?;
+                write!(self.output, ")").unwrap();
+            }
+            t => {
+                // Custom struct / array: copy out of the handle-owned box.
+                let c = self.type_to_c(t);
+                write!(self.output, "({{ void* _ap = glyph_async_await(").unwrap();
+                self.emit_expression(inner)?;
+                write!(
+                    self.output,
+                    "); {} _av = *({}*)_ap; _av; }})",
+                    c, c
+                )
+                .unwrap();
+            }
+        }
+        Ok(())
+    }
+
     fn emit_statement(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
         match stmt {
             Stmt::Let {
@@ -636,6 +932,14 @@ impl CCodegen {
                             Expr::Identifier(n) => Some(n.clone()),
                             _ => None,
                         };
+                        // Async calls build a lazy handle; no expected type needed.
+                        if let Some(n) = &callee {
+                            if let Some((cname, cparams)) = self.lookup_async_fn(n) {
+                                self.emit_async_call(&cname, &cparams, args)?;
+                                writeln!(self.output, ";").unwrap();
+                                return Ok(());
+                            }
+                        }
                         match callee
                             .as_deref()
                             .and_then(|n| self.resolve_call_with_expected(n, args, Some(declared)))
@@ -766,10 +1070,11 @@ impl CCodegen {
                 writeln!(self.output, "}}").unwrap();
             }
             Stmt::Spawn(expr) => {
+                // Launch a lazy async handle on a thread (idempotent).
                 self.emit_indent();
-                write!(self.output, "/* spawn */ ").unwrap();
+                write!(self.output, "glyph_async_spawn(").unwrap();
                 self.emit_expression(expr)?;
-                writeln!(self.output, ";").unwrap();
+                writeln!(self.output, ");").unwrap();
             }
         }
 
@@ -883,6 +1188,13 @@ impl CCodegen {
                 write!(self.output, ")").unwrap();
             }
             Expr::FunctionCall { name, args } => {
+                // Async call: build a lazy handle instead of calling directly.
+                if let Expr::Identifier(n) = name.as_ref() {
+                    if let Some((cname, cparams)) = self.lookup_async_fn(n) {
+                        self.emit_async_call(&cname, &cparams, args)?;
+                        return Ok(());
+                    }
+                }
                 // Map Glyph built-in function names to C names
                 let resolved_name = if let Expr::Identifier(n) = name.as_ref() {
                     self.resolve_call_cname(n, args)
@@ -924,26 +1236,91 @@ impl CCodegen {
                         self.emit_expression(object)?;
                     }
                     "send" => {
-                        write!(self.output, "/* send */ ").unwrap();
-                        self.emit_expression(object)?;
-                        write!(self.output, "(").unwrap();
-                        for (i, arg) in args.iter().enumerate() {
-                            if i > 0 {
-                                write!(self.output, ", ").unwrap();
+                        let elem = self
+                            .resolved_expr_type(object)
+                            .map(|t| self.subst_active(&t))
+                            .and_then(|t| match t {
+                                Type::Channel(inner) => Some(*inner),
+                                _ => None,
+                            })
+                            .unwrap_or(Type::String);
+                        let value = args.first();
+                        match value {
+                            Some(v) if Self::type_is_cell_payload(&elem) => {
+                                let c_elem = self.type_to_c(&elem);
+                                write!(self.output, "({{ __auto_type _sv = ").unwrap();
+                                self.emit_expression(v)?;
+                                write!(
+                                    self.output,
+                                    "; {}* _cell = ({}*)malloc(sizeof({})); *_cell = _sv; glyph_channel_send(",
+                                    c_elem, c_elem, c_elem
+                                )
+                                .unwrap();
+                                self.emit_expression(object)?;
+                                write!(self.output, ", _cell); }})").unwrap();
                             }
-                            self.emit_expression(arg)?;
+                            Some(v) if matches!(&elem, Type::Custom(_) | Type::Array(_, _)) => {
+                                write!(self.output, "({{ __auto_type _sv = ").unwrap();
+                                self.emit_expression(v)?;
+                                write!(
+                                    self.output,
+                                    "; void* _cell = malloc(sizeof(_sv)); memcpy(_cell, &_sv, sizeof(_sv)); glyph_channel_send("
+                                )
+                                .unwrap();
+                                self.emit_expression(object)?;
+                                write!(self.output, ", _cell); }})").unwrap();
+                            }
+                            Some(v) => {
+                                write!(self.output, "glyph_channel_send(").unwrap();
+                                self.emit_expression(object)?;
+                                write!(self.output, ", (void*)(").unwrap();
+                                self.emit_expression(v)?;
+                                write!(self.output, "))").unwrap();
+                            }
+                            None => {
+                                write!(self.output, "glyph_channel_send(").unwrap();
+                                self.emit_expression(object)?;
+                                write!(self.output, ", NULL)").unwrap();
+                            }
                         }
-                        write!(self.output, ")").unwrap();
                     }
                     "recv" => {
-                        write!(self.output, "/* recv */ ").unwrap();
+                        let elem = self
+                            .resolved_expr_type(object)
+                            .map(|t| self.subst_active(&t))
+                            .and_then(|t| match t {
+                                Type::Channel(inner) => Some(*inner),
+                                _ => None,
+                            })
+                            .unwrap_or(Type::String);
+                        self.emit_channel_recv(object, &elem)?;
+                    }
+                    "close" => {
+                        write!(self.output, "glyph_channel_close(").unwrap();
                         self.emit_expression(object)?;
+                        write!(self.output, ")").unwrap();
                     }
                     _ => {
                         match self.resolved_custom_type_name(object) {
                             Some(type_name) => {
+                                let full_name = format!("{}_{}", type_name, method);
+                                // Async method: build a lazy handle instead of calling.
+                                if let Some(sig) = self.functions.get(&full_name).cloned() {
+                                    if sig.is_async {
+                                        let cparams: Vec<(String, Type)> = sig
+                                            .params
+                                            .iter()
+                                            .map(|(nm, ty, _)| (nm.clone(), self.subst_active(ty)))
+                                            .collect();
+                                        let mut all_args: Vec<Expr> = Vec::with_capacity(args.len() + 1);
+                                        all_args.push((**object).clone());
+                                        all_args.extend(args.iter().cloned());
+                                        self.emit_async_call(&full_name, &cparams, &all_args)?;
+                                        return Ok(());
+                                    }
+                                }
                                 // Method on a custom type: Type_method(receiver, args...)
-                                write!(self.output, "{}_{}(", type_name, method).unwrap();
+                                write!(self.output, "{}(", full_name).unwrap();
                                 self.emit_expression(object)?;
                                 for arg in args {
                                     write!(self.output, ", ").unwrap();
@@ -1238,12 +1615,25 @@ impl CCodegen {
                 }
                 write!(self.output, "}}").unwrap();
             }
-            Expr::ChannelBounded { capacity: _ } => {
-                write!(self.output, "/* channel */").unwrap();
+            Expr::ChannelBounded { capacity, .. } => {
+                write!(self.output, "glyph_channel_create(").unwrap();
+                self.emit_expression(capacity)?;
+                write!(self.output, ")").unwrap();
             }
             Expr::Await(expr) => {
-                self.emit_expression(expr)?;
-                write!(self.output, " /* await */").unwrap();
+                // Unbox to the handle's payload type when statically known.
+                let payload = self.resolved_expr_type(expr).and_then(|t| match t {
+                    Type::Async(inner) => Some(*inner),
+                    _ => None,
+                });
+                match payload {
+                    Some(t) => self.emit_await(expr, &self.subst_active(&t))?,
+                    None => {
+                        write!(self.output, "glyph_async_await(").unwrap();
+                        self.emit_expression(expr)?;
+                        write!(self.output, ")").unwrap();
+                    }
+                }
             }
         }
 
@@ -1500,7 +1890,7 @@ impl CCodegen {
                     self.scan_expr(e, var_types, active_subst)?;
                 }
             }
-            Expr::ChannelBounded { capacity } => self.scan_expr(capacity, var_types, active_subst)?,
+            Expr::ChannelBounded { capacity, .. } => self.scan_expr(capacity, var_types, active_subst)?,
             Expr::Await(e) => self.scan_expr(e, var_types, active_subst)?,
         }
         Ok(())
@@ -1602,7 +1992,11 @@ impl CCodegen {
                     _ => return None,
                 };
                 if let Some(sig) = self.functions.get(callee) {
-                    return sig.return_type.clone();
+                    let ret = sig.return_type.clone();
+                    if sig.is_async {
+                        return ret.map(|t| Type::Async(Box::new(t)));
+                    }
+                    return ret;
                 }
                 if self.generic_fns.contains_key(callee) {
                     let info = self.generic_fns.get(callee).unwrap();
@@ -1619,6 +2013,13 @@ impl CCodegen {
                 }
                 None
             }
+            Expr::ChannelBounded { elem_type, .. } => Some(Type::Channel(
+                Box::new(substitute_type(&self.active_substitution, elem_type)),
+            )),
+            Expr::Await(inner) => match self.concrete_type_of(inner, var_types)? {
+                Type::Async(t) => Some(*t),
+                _ => None,
+            },
             Expr::FieldAccess { object, field } => {
                 let ty = self.concrete_type_of(object, var_types)?;
                 if let Type::Custom(obj_name) = ty {
@@ -1781,24 +2182,30 @@ impl CCodegen {
                     Expr::Identifier(n) => n,
                     _ => return None,
                 };
-                self.functions
-                    .get(callee)
-                    .and_then(|s| s.return_type.clone())
-                    .map(|rt| match rt {
-                        Type::Ref(inner) => *inner,
-                        _ => rt,
-                    })
+                let sig = self.functions.get(callee)?;
+                let rt = sig.return_type.clone().map(|rt| match rt {
+                    Type::Ref(inner) => *inner,
+                    _ => rt,
+                })?;
+                if sig.is_async {
+                    Some(Type::Async(Box::new(rt)))
+                } else {
+                    Some(rt)
+                }
             }
             Expr::MethodCall { object, method, .. } => {
                 let ty = self.resolved_custom_type_name(object)?;
-                let key = format!("{}.{}", ty, method);
-                self.functions
-                    .get(&key)
-                    .and_then(|s| s.return_type.clone())
-                    .map(|rt| match rt {
-                        Type::Ref(inner) => *inner,
-                        _ => rt,
-                    })
+                let key = format!("{}_{}", ty, method);
+                let sig = self.functions.get(&key)?;
+                let rt = sig.return_type.clone().map(|rt| match rt {
+                    Type::Ref(inner) => *inner,
+                    _ => rt,
+                })?;
+                if sig.is_async {
+                    Some(Type::Async(Box::new(rt)))
+                } else {
+                    Some(rt)
+                }
             }
             _ => None,
         }
@@ -1918,6 +2325,165 @@ impl CCodegen {
         writeln!(self.output, "void* glyph_parse_float(const char* s) {{").unwrap();
         writeln!(self.output, "    char* end; double v = strtod(s, &end);").unwrap();
         writeln!(self.output, "    if (end == s) return glyph_box_construct(0, NULL, 0); return glyph_box_construct(1, &v, sizeof(v));").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "").unwrap();
+
+        // Concurrency runtime (pthreads): lazy async handles + MPMC channels
+        writeln!(self.output, "typedef struct {{").unwrap();
+        writeln!(self.output, "    void* (*run)(void*);").unwrap();
+        writeln!(self.output, "    void* args;").unwrap();
+        writeln!(self.output, "    void* result;").unwrap();
+        writeln!(self.output, "    int started;").unwrap();
+        writeln!(self.output, "    int done;").unwrap();
+        writeln!(self.output, "    int joined;").unwrap();
+        writeln!(self.output, "    pthread_t thread;").unwrap();
+        writeln!(self.output, "    pthread_mutex_t mu;").unwrap();
+        writeln!(self.output, "    pthread_cond_t cond;").unwrap();
+        writeln!(self.output, "}} GlyphAsync;").unwrap();
+        writeln!(self.output, "static void* glyph_async_thread_entry(void* p) {{").unwrap();
+        writeln!(self.output, "    GlyphAsync* h = (GlyphAsync*)p;").unwrap();
+        writeln!(self.output, "    void* r = h->run(h->args);").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&h->mu);").unwrap();
+        writeln!(self.output, "    h->result = r; h->done = 1;").unwrap();
+        writeln!(self.output, "    pthread_cond_broadcast(&h->cond);").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&h->mu);").unwrap();
+        writeln!(self.output, "    return r;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "void* glyph_async_create(void* (*run)(void*), void* args) {{").unwrap();
+        writeln!(self.output, "    GlyphAsync* h = (GlyphAsync*)malloc(sizeof(GlyphAsync));").unwrap();
+        writeln!(self.output, "    h->run = run; h->args = args; h->result = NULL;").unwrap();
+        writeln!(self.output, "    h->started = 0; h->done = 0; h->joined = 0;").unwrap();
+        writeln!(self.output, "    pthread_mutex_init(&h->mu, NULL);").unwrap();
+        writeln!(self.output, "    pthread_cond_init(&h->cond, NULL);").unwrap();
+        writeln!(self.output, "    return (void*)h;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "void glyph_async_spawn(void* hp) {{").unwrap();
+        writeln!(self.output, "    GlyphAsync* h = (GlyphAsync*)hp;").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&h->mu);").unwrap();
+        writeln!(self.output, "    if (h->started) {{ pthread_mutex_unlock(&h->mu); return; }}").unwrap();
+        writeln!(self.output, "    h->started = 1;").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&h->mu);").unwrap();
+        writeln!(self.output, "    pthread_create(&h->thread, NULL, glyph_async_thread_entry, (void*)h);").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "void* glyph_async_await(void* hp) {{").unwrap();
+        writeln!(self.output, "    GlyphAsync* h = (GlyphAsync*)hp;").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&h->mu);").unwrap();
+        writeln!(self.output, "    if (!h->started) {{").unwrap();
+        writeln!(self.output, "        h->started = 1; h->done = 1;").unwrap();
+        writeln!(self.output, "        void* (*run)(void*) = h->run; void* args = h->args;").unwrap();
+        writeln!(self.output, "        pthread_mutex_unlock(&h->mu);").unwrap();
+        writeln!(self.output, "        void* r = run(args);").unwrap();
+        writeln!(self.output, "        pthread_mutex_lock(&h->mu);").unwrap();
+        writeln!(self.output, "        h->result = r;").unwrap();
+        writeln!(self.output, "        pthread_mutex_unlock(&h->mu);").unwrap();
+        writeln!(self.output, "        return r;").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "    while (!h->done) {{").unwrap();
+        writeln!(self.output, "        if (!h->joined) {{").unwrap();
+        writeln!(self.output, "            h->joined = 1;").unwrap();
+        writeln!(self.output, "            pthread_t t = h->thread;").unwrap();
+        writeln!(self.output, "            pthread_mutex_unlock(&h->mu);").unwrap();
+        writeln!(self.output, "            void* res = NULL;").unwrap();
+        writeln!(self.output, "            pthread_join(t, &res);").unwrap();
+        writeln!(self.output, "            pthread_mutex_lock(&h->mu);").unwrap();
+        writeln!(self.output, "            h->result = res; h->done = 1;").unwrap();
+        writeln!(self.output, "            pthread_cond_broadcast(&h->cond);").unwrap();
+        writeln!(self.output, "        }} else {{").unwrap();
+        writeln!(self.output, "            pthread_cond_wait(&h->cond, &h->mu);").unwrap();
+        writeln!(self.output, "        }}").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "    void* r = h->result;").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&h->mu);").unwrap();
+        writeln!(self.output, "    return r;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "").unwrap();
+
+        writeln!(self.output, "typedef struct {{").unwrap();
+        writeln!(self.output, "    pthread_mutex_t mu;").unwrap();
+        writeln!(self.output, "    pthread_cond_t not_full;").unwrap();
+        writeln!(self.output, "    pthread_cond_t not_empty;").unwrap();
+        writeln!(self.output, "    void** buf;").unwrap();
+        writeln!(self.output, "    int64_t cap;").unwrap();
+        writeln!(self.output, "    int64_t len;").unwrap();
+        writeln!(self.output, "    int64_t head;").unwrap();
+        writeln!(self.output, "    void* slot;").unwrap();
+        writeln!(self.output, "    int has_slot;").unwrap();
+        writeln!(self.output, "    int receiver_waiting;").unwrap();
+        writeln!(self.output, "    int taken;").unwrap();
+        writeln!(self.output, "    int closed;").unwrap();
+        writeln!(self.output, "}} GlyphChannel;").unwrap();
+        writeln!(self.output, "void* glyph_channel_create(int64_t cap) {{").unwrap();
+        writeln!(self.output, "    GlyphChannel* ch = (GlyphChannel*)malloc(sizeof(GlyphChannel));").unwrap();
+        writeln!(self.output, "    pthread_mutex_init(&ch->mu, NULL);").unwrap();
+        writeln!(self.output, "    pthread_cond_init(&ch->not_full, NULL);").unwrap();
+        writeln!(self.output, "    pthread_cond_init(&ch->not_empty, NULL);").unwrap();
+        writeln!(self.output, "    ch->cap = cap; ch->len = 0; ch->head = 0;").unwrap();
+        writeln!(self.output, "    ch->buf = cap > 0 ? (void**)malloc(sizeof(void*) * (size_t)cap) : NULL;").unwrap();
+        writeln!(self.output, "    ch->slot = NULL; ch->has_slot = 0; ch->receiver_waiting = 0; ch->taken = 0;").unwrap();
+        writeln!(self.output, "    ch->closed = 0;").unwrap();
+        writeln!(self.output, "    return (void*)ch;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "int glyph_channel_send(void* cp, void* p) {{").unwrap();
+        writeln!(self.output, "    GlyphChannel* ch = (GlyphChannel*)cp;").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&ch->mu);").unwrap();
+        writeln!(self.output, "    if (ch->closed) {{ pthread_mutex_unlock(&ch->mu); return 0; }}").unwrap();
+        writeln!(self.output, "    if (ch->cap <= 0) {{").unwrap();
+        writeln!(self.output, "        for (;;) {{").unwrap();
+        writeln!(self.output, "            if (ch->receiver_waiting > 0 && !ch->has_slot) {{").unwrap();
+        writeln!(self.output, "                ch->slot = p; ch->has_slot = 1; ch->taken = 0;").unwrap();
+        writeln!(self.output, "                pthread_cond_signal(&ch->not_empty);").unwrap();
+        writeln!(self.output, "                while (!ch->taken && !ch->closed) pthread_cond_wait(&ch->not_full, &ch->mu);").unwrap();
+        writeln!(self.output, "                int ok = ch->taken;").unwrap();
+        writeln!(self.output, "                if (!ok) ch->has_slot = 0;").unwrap();
+        writeln!(self.output, "                pthread_mutex_unlock(&ch->mu);").unwrap();
+        writeln!(self.output, "                return ok;").unwrap();
+        writeln!(self.output, "            }}").unwrap();
+        writeln!(self.output, "            if (ch->closed) {{ pthread_mutex_unlock(&ch->mu); return 0; }}").unwrap();
+        writeln!(self.output, "            pthread_cond_wait(&ch->not_full, &ch->mu);").unwrap();
+        writeln!(self.output, "        }}").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "    while (ch->len == ch->cap && !ch->closed) pthread_cond_wait(&ch->not_full, &ch->mu);").unwrap();
+        writeln!(self.output, "    if (ch->closed) {{ pthread_mutex_unlock(&ch->mu); return 0; }}").unwrap();
+        writeln!(self.output, "    ch->buf[(ch->head + ch->len) % ch->cap] = p;").unwrap();
+        writeln!(self.output, "    ch->len++;").unwrap();
+        writeln!(self.output, "    pthread_cond_signal(&ch->not_empty);").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&ch->mu);").unwrap();
+        writeln!(self.output, "    return 1;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "void* glyph_channel_recv(void* cp) {{").unwrap();
+        writeln!(self.output, "    GlyphChannel* ch = (GlyphChannel*)cp;").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&ch->mu);").unwrap();
+        writeln!(self.output, "    if (ch->cap <= 0) {{").unwrap();
+        writeln!(self.output, "        for (;;) {{").unwrap();
+        writeln!(self.output, "            if (ch->has_slot) break;").unwrap();
+        writeln!(self.output, "            if (ch->closed) {{ pthread_mutex_unlock(&ch->mu); return NULL; }}").unwrap();
+        writeln!(self.output, "            ch->receiver_waiting++;").unwrap();
+        writeln!(self.output, "            pthread_cond_signal(&ch->not_full);").unwrap();
+        writeln!(self.output, "            pthread_cond_wait(&ch->not_empty, &ch->mu);").unwrap();
+        writeln!(self.output, "            ch->receiver_waiting--;").unwrap();
+        writeln!(self.output, "        }}").unwrap();
+        writeln!(self.output, "        void* p = ch->slot;").unwrap();
+        writeln!(self.output, "        ch->has_slot = 0; ch->taken = 1;").unwrap();
+        writeln!(self.output, "        pthread_cond_signal(&ch->not_full);").unwrap();
+        writeln!(self.output, "        pthread_mutex_unlock(&ch->mu);").unwrap();
+        writeln!(self.output, "        return p;").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "    while (ch->len == 0 && !ch->closed) pthread_cond_wait(&ch->not_empty, &ch->mu);").unwrap();
+        writeln!(self.output, "    if (ch->len == 0) {{ pthread_mutex_unlock(&ch->mu); return NULL; }}").unwrap();
+        writeln!(self.output, "    void* p = ch->buf[ch->head];").unwrap();
+        writeln!(self.output, "    ch->head = (ch->head + 1) % ch->cap;").unwrap();
+        writeln!(self.output, "    ch->len--;").unwrap();
+        writeln!(self.output, "    pthread_cond_signal(&ch->not_full);").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&ch->mu);").unwrap();
+        writeln!(self.output, "    return p;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "void glyph_channel_close(void* cp) {{").unwrap();
+        writeln!(self.output, "    GlyphChannel* ch = (GlyphChannel*)cp;").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&ch->mu);").unwrap();
+        writeln!(self.output, "    ch->closed = 1;").unwrap();
+        writeln!(self.output, "    pthread_cond_broadcast(&ch->not_full);").unwrap();
+        writeln!(self.output, "    pthread_cond_broadcast(&ch->not_empty);").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&ch->mu);").unwrap();
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 

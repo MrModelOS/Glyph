@@ -61,6 +61,9 @@ pub enum TypeError {
 
     #[error("Cannot infer type arguments for generic function '{0}'")]
     CannotInferTypeArgs(String),
+
+    #[error("Async generic functions are not supported: '{0}'")]
+    AsyncGeneric(String),
 }
 
 #[derive(Debug, Clone)]
@@ -297,6 +300,9 @@ impl TypeChecker {
                     ..
                 } => {
                     if !type_params.is_empty() {
+                        if *is_async {
+                            return Err(TypeError::AsyncGeneric(name.clone()));
+                        }
                         self.generic_fns.insert(
                             name.clone(),
                             GenericFnInfo {
@@ -886,7 +892,14 @@ impl TypeChecker {
                     }
                 }
 
-                Ok(sig.return_type.unwrap_or(Type::Void))
+                let ret = sig.return_type.unwrap_or(Type::Void);
+                // Calling an async function yields a lazy handle; `spawn`
+                // launches it on a thread, `await` extracts the value.
+                if sig.is_async {
+                    Ok(Type::Async(Box::new(ret)))
+                } else {
+                    Ok(ret)
+                }
             }
 
             Expr::MethodCall {
@@ -930,7 +943,8 @@ impl TypeChecker {
                             if args.len() == 1 {
                                 let arg_type = self.check_expression(&args[0])?;
                                 if self.types_compatible(elem_type, &arg_type) {
-                                    Ok(Type::Option(Box::new(Type::Void)))
+                                    // true = queued, false = channel closed
+                                    Ok(Type::Bool)
                                 } else {
                                     Err(TypeError::TypeMismatch {
                                         expected: format!("{:?}", elem_type),
@@ -944,7 +958,26 @@ impl TypeChecker {
                                 })
                             }
                         }
-                        "recv" => Ok(Type::Option(elem_type.clone())),
+                        "recv" => {
+                            if args.is_empty() {
+                                Ok(Type::Option(elem_type.clone()))
+                            } else {
+                                Err(TypeError::WrongArgumentCount {
+                                    expected: 0,
+                                    found: args.len(),
+                                })
+                            }
+                        }
+                        "close" => {
+                            if args.is_empty() {
+                                Ok(Type::Void)
+                            } else {
+                                Err(TypeError::WrongArgumentCount {
+                                    expected: 0,
+                                    found: args.len(),
+                                })
+                            }
+                        }
                         _ => Err(TypeError::UndefinedFunction(format!("Channel.{}", method))),
                     },
                     Type::Custom(type_name) => {
@@ -989,7 +1022,12 @@ impl TypeChecker {
                                     });
                                 }
                             }
-                            Ok(sig.return_type.unwrap_or(Type::Void))
+                            let ret = sig.return_type.unwrap_or(Type::Void);
+                            if sig.is_async {
+                                Ok(Type::Async(Box::new(ret)))
+                            } else {
+                                Ok(ret)
+                            }
                         } else {
                             Err(TypeError::UndefinedFunction(format!("{}.{}", type_name, method)))
                         }
@@ -1196,7 +1234,7 @@ impl TypeChecker {
                 outcome
             }
 
-            Expr::ChannelBounded { capacity } => {
+            Expr::ChannelBounded { elem_type, capacity } => {
                 let cap_type = self.check_expression(capacity)?;
                 if !matches!(cap_type, Type::UInt64 | Type::Int64) {
                     return Err(TypeError::TypeMismatch {
@@ -1204,7 +1242,7 @@ impl TypeChecker {
                         found: format!("{:?}", cap_type),
                     });
                 }
-                Ok(Type::Channel(Box::new(Type::String))) // Default to Channel<String>
+                Ok(Type::Channel(elem_type.clone()))
             }
 
             Expr::StructInit { name, fields } => {
@@ -1787,6 +1825,122 @@ mod tests {
 @fn main() -> Void {
     let x = make();
     print_int(x);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_async_spawn_await() {
+        let input = "\
+@fn async fetch(url: String) -> String {
+    return url;
+}
+@fn async add_async(a: Int64, b: Int64) -> Int64 {
+    return a + b;
+}
+@fn main() -> Void {
+    let h: Async<String> = fetch(\"hi\");
+    spawn h;
+    let s: String = h await;
+    let sum: Int64 = add_async(20, 22) await;
+    println(s);
+    print_int(sum);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_channel_send_recv_close() {
+        let input = "\
+@fn main() -> Void {
+    let ch: Channel<Int64> = Channel<Int64>(4);
+    let ok: Bool = ch.send(1);
+    let m: Option<Int64> = ch.recv();
+    ch.close();
+    let v: Int64 = match m {
+        | Some(x) => x,
+        | None => -1
+    };
+    print_int(v);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_spawn_non_async() {
+        let input = "\
+@fn main() -> Void {
+    spawn 42;
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_await_non_async() {
+        let input = "\
+@fn main() -> Void {
+    let x: Int64 = 5;
+    let y: Int64 = x await;
+    print_int(y);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_channel_send_wrong_type() {
+        let input = "\
+@fn main() -> Void {
+    let ch: Channel<Int64> = Channel<Int64>(4);
+    ch.send(\"oops\");
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_async_generic_rejected() {
+        let input = "\
+@fn async wrap<T>(x: T) -> T {
+    return x;
+}
+@fn main() -> Void {
+    let a: Int64 = wrap(1) await;
+    print_int(a);
 }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize().unwrap();

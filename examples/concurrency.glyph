@@ -1,0 +1,90 @@
+@fn async times_two(n: Int64) -> Int64 {
+    return n * 2;
+}
+
+@fn async greet(name: String) -> String {
+    return name;
+}
+
+@fn async produce(ch: Channel<Int64>) -> Int64 {
+    ch.send(10);
+    ch.send(20);
+    ch.send(30);
+    ch.close();
+    return 3;
+}
+
+@fn drain(ch: Channel<Int64>) -> Int64 {
+    let total: Int64 = 0;
+    let go: Bool = true;
+    while go {
+        let m: Option<Int64> = ch.recv();
+        let v: Int64 = match m {
+            | Some(x) => x,
+            | None => -1,
+        };
+        if v == -1 {
+            go = false;
+        } else {
+            total = total + v;
+        }
+    }
+    return total;
+}
+
+@fn main() -> Int64 {
+    // Lazy handles: calling an async fn does not run it yet.
+    let h1: Async<Int64> = times_two(21);
+    let h2: Async<String> = greet("hello");
+
+    // spawn launches each handle on its own thread.
+    spawn h1;
+    spawn h2;
+
+    // await blocks for the result (times_two await reuses the cached value).
+    print_int(h1 await);
+    println(h2 await);
+    print_int(h1 await);
+
+    // Buffered channel: producer thread sends, main thread receives.
+    let ch: Channel<Int64> = Channel<Int64>(4);
+    let hp: Async<Int64> = produce(ch);
+    spawn hp;
+    print_int(drain(ch));
+    print_int(hp await);
+
+    // Rendezvous channel (capacity 0): direct handoff, no buffering.
+    let r: Channel<String> = Channel<String>(0);
+    let hr: Async<Int64> = greet_into(r);
+    spawn hr;
+    let m: Option<String> = r.recv();
+    let s: String = match m {
+        | Some(x) => x,
+        | None => "empty",
+    };
+    println(s);
+    print_int(hr await);
+
+    // send on a closed channel fails; recv on a closed+empty one gives None.
+    let c: Channel<Int64> = Channel<Int64>(2);
+    c.close();
+    let ok: Bool = c.send(99);
+    if ok {
+        println("unexpected send success");
+    } else {
+        println("send on closed -> false");
+    }
+    let gone: Option<Int64> = c.recv();
+    let g: Int64 = match gone {
+        | Some(x) => x,
+        | None => -7,
+    };
+    print_int(g);
+
+    return 0;
+}
+
+@fn async greet_into(ch: Channel<String>) -> Int64 {
+    ch.send("via-rendezvous");
+    return 0;
+}

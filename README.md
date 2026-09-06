@@ -25,6 +25,8 @@ Glyph транслируется в C-код (GNU statement expressions) и со
   сопоставление (`Ok(v)`/`Some(v)` в `match`) с payload, в т.ч. из `parse_int`/`parse_float`
 - Обобщённые функции: `@fn identity<T>(x: T) -> T` — мономорфизация, вывод типов
   по аргументам и из аннотации `let`, вложенные типы (`Option<T>`, `List<T>`)
+- Конкурентность (pthreads): `@fn async`, ленивые хендлы `Async<T>`, `spawn`/`await`,
+  типизированные каналы `Channel<T>(capacity)` (буферизованные + rendezvous), `send`/`recv`/`close`
 - Встроенный тестовый фреймворк: `@test`, ассерты, `glyphc test`
 
 ## Установка
@@ -248,6 +250,49 @@ for i in 1..=5 { total = total + i; }           // 15
 }
 ```
 
+### Конкурентность
+
+Вызов `@fn async` возвращает ленивый хендл `Async<T>` (поток не запущен).
+`spawn` запускает хендл на отдельном потоке (pthreads), `await` ждёт результат
+(выполняет синхронно, если не запущен; повторный `await` берёт кэш):
+
+```glyph
+@fn async fetch(url: String) -> String {
+    return url;
+}
+
+@fn main() {
+    let h: Async<String> = fetch("http://x");
+    spawn h;
+    println(h await);
+}
+```
+
+Типизированные каналы `Channel<T>(capacity)`: ёмкость `0` — rendezvous
+(прямая передача), `> 0` — буфер. `send` блокирует при полном буфере и
+возвращает `false` на закрытом канале; `recv` блокирует при пустом и даёт
+`None`, когда канал закрыт и пуст:
+
+```glyph
+@fn async produce(ch: Channel<Int64>) -> Int64 {
+    ch.send(10);
+    ch.send(20);
+    ch.close();
+    return 2;
+}
+
+@fn main() {
+    let ch: Channel<Int64> = Channel<Int64>(4);
+    spawn produce(ch);
+    let m: Option<Int64> = ch.recv();
+    let v: Int64 = match m {
+        | Some(x) => x,
+        | None => -1
+    };
+    print_int(v);
+}
+```
+
 ## Ассерты и тесты
 
 ```glyph
@@ -298,7 +343,7 @@ optimization = "-O2"
 
 ## Примеры
 
-Все примеры в `examples/` — 16 файлов + многофайловый проект `examples/project/` + тестовый
+Все примеры в `examples/` — 17 файлов + многофайловый проект `examples/project/` + тестовый
 проект `examples/tests/`. Проверить сразу всё:
 
 ```bash
@@ -316,6 +361,7 @@ examples/run_all.sh
 | `math_test.glyph`, `stdlib_test.glyph` | std.math / std.io / std.string |
 | `error_handling.glyph` | `#guard` + enum-ошибка |
 | `generics.glyph` | обобщённые функции: инференс, `Option<T>`/`Result<T, E>`, цепочки вызовов |
+| `concurrency.glyph` | `@fn async`, `spawn`/`await`, `Channel<T>`, `send`/`recv`/`close` |
 | `project/` | модульная программа: `@use math`, `@use geometry` |
 | `tests/` | тестовый проект: `@test`, ассерты, `glyphc test` |
 
@@ -335,9 +381,10 @@ glyphc/
   вызов generic-функции внутри generic-тела требует конкретных типов
 - `List<T>` динамические операции (`append`, `len`, рост размера) в работе;
   сейчас доступны литералы и индексация фиксированных списков
-- Конкурентность (`spawn`, `await`, каналы) в поверхностном языке ещё нет
+- Конкурентность: без GC — хендлы/каналы/ячейки не освобождаются; нет `select`,
+  таймаутов и async-generic функций; передача `&ref` между потоками — на свой риск
 - LSP-сервер — экспериментальный
-- Планы v1.1: динамические `List<T>`, конкурентность
+- Планы v1.1: динамические `List<T>`
 
 ## Лицензия
 

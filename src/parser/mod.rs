@@ -422,6 +422,12 @@ impl Parser {
         let mut methods = Vec::new();
         while self.peek() != &Token::RBrace {
             self.expect(&Token::Fn)?;
+            let is_async = if self.peek() == &Token::Async {
+                self.advance();
+                true
+            } else {
+                false
+            };
             let method_name = self.expect_ident()?;
             self.expect(&Token::LParen)?;
 
@@ -463,7 +469,7 @@ impl Parser {
                 params,
                 return_type,
                 body,
-                is_async: false,
+                is_async,
             });
         }
 
@@ -1174,6 +1180,7 @@ impl Parser {
             Token::Match => self.parse_match(),
             Token::TypeResult => self.parse_builtin_enum_constructor("Result"),
             Token::TypeOption => self.parse_builtin_enum_constructor("Option"),
+            Token::TypeChannel => self.parse_channel_constructor(),
             _ => Err(ParseError::UnexpectedToken(
                 spanned.token.clone(),
                 spanned.line,
@@ -1215,6 +1222,22 @@ impl Parser {
             enum_name: enum_name.to_string(),
             variant,
             args,
+        })
+    }
+
+    /// Parse a channel constructor: Channel<T>(capacity).
+    fn parse_channel_constructor(&mut self) -> Result<Expr, ParseError> {
+        self.advance(); // consume Channel token
+        self.expect(&Token::Lt)?;
+        let elem_type = self.parse_type()?;
+        self.expect(&Token::Gt)?;
+        self.expect(&Token::LParen)?;
+        let capacity = self.parse_expression()?;
+        self.expect(&Token::RParen)?;
+
+        Ok(Expr::ChannelBounded {
+            elem_type: Box::new(elem_type),
+            capacity: Box::new(capacity),
         })
     }
 
@@ -1605,6 +1628,87 @@ mod tests {
             } => {
                 assert!(type_params.is_empty());
                 assert_eq!(params[0].ty, Type::Custom("T".to_string()));
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_channel_constructor() {
+        let input = "@fn main() -> Void { let ch: Channel<Int64> = Channel<Int64>(10); }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        match &program.items[0] {
+            TopLevelItem::Function { body, .. } => {
+                if let Stmt::Let { ty, value, .. } = &body[0] {
+                    assert_eq!(ty, &Some(Type::Channel(Box::new(Type::Int64))));
+                    match value {
+                        Expr::ChannelBounded { elem_type, .. } => {
+                            assert_eq!(**elem_type, Type::Int64);
+                        }
+                        _ => panic!("Expected channel constructor"),
+                    }
+                } else {
+                    panic!("Expected let statement");
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_async_function() {
+        let input = "@fn async fetch(url: String) -> String { return url; }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        match &program.items[0] {
+            TopLevelItem::Function { name, is_async, .. } => {
+                assert_eq!(name, "fetch");
+                assert!(is_async);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_async_impl_method() {
+        let input = "@struct U { x: Int64 } @impl U { @fn async get(u: U) -> Int64 { return u.x; } }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        match &program.items[1] {
+            TopLevelItem::Impl { methods, .. } => {
+                assert_eq!(methods.len(), 1);
+                assert!(methods[0].is_async);
+            }
+            _ => panic!("Expected impl"),
+        }
+    }
+
+    #[test]
+    fn test_parse_spawn_await() {
+        let input = "@fn main() -> Void { spawn h; let s: String = h await; }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        match &program.items[0] {
+            TopLevelItem::Function { body, .. } => {
+                assert!(matches!(&body[0], Stmt::Spawn(_)));
+                if let Stmt::Let { value, .. } = &body[1] {
+                    assert!(matches!(value, Expr::Await(_)));
+                } else {
+                    panic!("Expected let statement");
+                }
             }
             _ => panic!("Expected function"),
         }

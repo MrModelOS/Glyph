@@ -33,6 +33,7 @@ glyphc run --input examples/hello.glyph
 | `stdlib_test.glyph` | `std.io`, `std.string` |
 | `error_handling.glyph` | `#guard` + перечисление-ошибка (`DivisionResult`) |
 | `generics.glyph` | обобщённые функции: `<T>`, `<T, K>`, `Option<T>`, `Result<T, E>`, цепочки |
+| `concurrency.glyph` | `@fn async`, `spawn`/`await`, `Channel<T>`, `send`/`recv`/`close` |
 | `project/` | многофайловый проект: 6 модулей, импорт `@use`, вызовы `math::…` |
 | `tests/` | тестовый проект: `@test`-модуль `calc.glyph` + `main.glyph`, `glyphc test` |
 

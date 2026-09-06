@@ -129,6 +129,7 @@ pub enum Expr {
 
     // Channel operations
     ChannelBounded {
+        elem_type: Box<Type>,
         capacity: Box<Expr>,
     },
 
