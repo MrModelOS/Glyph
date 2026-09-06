@@ -13,7 +13,7 @@ use crate::modules::ModuleResolver;
 
 #[derive(ClapParser)]
 #[command(name = "glyphc")]
-#[command(version = "0.1.0")]
+#[command(version = "1.0.0")]
 #[command(about = "Glyph language compiler", long_about = None)]
 struct Cli {
     #[command(subcommand)]

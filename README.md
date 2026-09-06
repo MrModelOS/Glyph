@@ -1,6 +1,6 @@
 # Glyph Language Compiler (glyphc)
 
-Компилятор языка программирования **Glyph** v0.2.0, написанный на Rust.
+Компилятор языка программирования **Glyph** v1.0.0, написанный на Rust.
 
 Glyph транслируется в C-код (GNU statement expressions) и собирается через GCC или clang.
 Скомпилированные программы — обычные нативные бинарники.
@@ -218,7 +218,7 @@ optimization = "-O2"
 ```
 
 `build` компилирует все `.glyph` из `src/` и линкует их в `build/main`.
-`--profile release` использует `-O3`. В v0.2 `build` не запускает тесты — для этого есть `glyphc test`.
+`--profile release` использует `-O3`. В v1.0 `build` не запускает тесты — для этого есть `glyphc test`.
 
 ## Примеры
 
