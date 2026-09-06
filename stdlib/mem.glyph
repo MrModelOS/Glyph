@@ -1,0 +1,17 @@
+@module std.mem
+
+@fn alloc(size: Int64) -> Bytes {
+    return __builtin_alloc(size);
+}
+
+@fn free(ptr: Bytes) -> Void {
+    __builtin_free(ptr);
+}
+
+@fn copy(dst: Bytes, src: Bytes, size: Int64) -> Void {
+    __builtin_memcpy(dst, src, size);
+}
+
+@fn set(dst: Bytes, value: Int64, size: Int64) -> Void {
+    __builtin_memset(dst, value, size);
+}

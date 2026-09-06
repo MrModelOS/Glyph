@@ -1,0 +1,17 @@
+[package]
+name = "glyphc"
+version = "0.1.0"
+edition = "2021"
+description = "Glyph language compiler"
+license = "MIT"
+
+[[bin]]
+name = "glyphc"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+thiserror = "1"
+serde_json = "1"
+
+[dev-dependencies]

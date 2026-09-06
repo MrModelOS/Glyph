@@ -1,0 +1,21 @@
+@module examples.enums
+
+@enum HttpStatus {
+    Ok = 200,
+    NotFound = 404,
+    InternalError = 500,
+}
+
+@fn status_text(status: HttpStatus) -> String {
+    match status {
+        | Ok => "OK"
+        | NotFound => "Not Found"
+        | InternalError => "Internal Server Error"
+    }
+}
+
+@fn main() -> Void {
+    let status: HttpStatus = HttpStatus.Ok;
+    let text: String = status_text(status);
+    print(text);
+}

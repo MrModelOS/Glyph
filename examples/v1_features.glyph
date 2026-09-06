@@ -1,0 +1,29 @@
+@module examples.v1_features
+
+@fn main() -> Void {
+    // While loop
+    let i: Int64 = 0;
+    while i < 5 {
+        print("Iteration");
+        i = i + 1;
+    }
+
+    // As cast
+    let x: Int64 = 42;
+    let y: Float64 = x as Float64;
+    print("Cast result");
+
+    // Range
+    let range: List<Int64> = 0..10;
+
+    // Array literal
+    let arr: List<Int64> = [1, 2, 3, 4, 5];
+
+    // Match with wildcard
+    let val: Int64 = 2;
+    match val {
+        | 1 => print("one")
+        | 2 => print("two")
+        | _ => print("other")
+    }
+}

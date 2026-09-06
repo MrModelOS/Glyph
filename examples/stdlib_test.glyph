@@ -1,0 +1,27 @@
+@fn main() -> Void {
+    // Test std.io
+    println("Hello from Glyph!");
+
+    // Test std.string
+    let s: String = "Hello, World!";
+    let length: Int64 = len(s);
+    print_int(length);
+
+    let upper: String = to_upper(s);
+    println(upper);
+
+    // Test std.math
+    let x: Float64 = 9.0;
+    let root: Float64 = sqrt(x);
+    print_float(root);
+
+    // Test std.conv
+    let num: Int64 = 42;
+    let num_str: String = int_to_string(num);
+    println(num_str);
+
+    // Test std.assert
+    assert_eq(num_str, "42", "Conversion should work");
+
+    println("All stdlib tests passed!");
+}

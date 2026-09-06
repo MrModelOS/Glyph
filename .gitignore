@@ -1,0 +1,15 @@
+/target
+
+# Сгенерированные C-файлы и бинарники
+*.c
+hello
+structs
+
+# Артефакты сборки проекта
+test_project/build/
+
+# Временные файлы
+*.swp
+*.swo
+*~
+.DS_Store

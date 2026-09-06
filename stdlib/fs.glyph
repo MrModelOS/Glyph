@@ -1,0 +1,37 @@
+@module std.fs
+
+@fn read(path: String) -> String {
+    return __builtin_file_read(path);
+}
+
+@fn write(path: String, content: String) -> Bool {
+    return __builtin_file_write(path, content);
+}
+
+@fn append(path: String, content: String) -> Bool {
+    return __builtin_file_append(path, content);
+}
+
+@fn exists(path: String) -> Bool {
+    return __builtin_file_exists(path);
+}
+
+@fn create_dir(path: String) -> Bool {
+    return __builtin_create_dir(path);
+}
+
+@fn remove(path: String) -> Bool {
+    return __builtin_remove_file(path);
+}
+
+@fn list_dir(path: String) -> String {
+    return __builtin_list_dir(path);
+}
+
+@fn copy(src: String, dst: String) -> Bool {
+    return __builtin_file_copy(src, dst);
+}
+
+@fn rename(old: String, new: String) -> Bool {
+    return __builtin_file_rename(old, new);
+}

@@ -1,0 +1,79 @@
+@module std.math
+
+@const PI: Float64 = 3.141592653589793;
+@const E: Float64 = 2.718281828459045;
+
+@fn abs(x: Float64) -> Float64 {
+    if x < 0.0 {
+        return -x;
+    }
+    return x;
+}
+
+@fn min(a: Float64, b: Float64) -> Float64 {
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+@fn max(a: Float64, b: Float64) -> Float64 {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+@fn clamp(value: Float64, low: Float64, high: Float64) -> Float64 {
+    if value < low {
+        return low;
+    }
+    if value > high {
+        return high;
+    }
+    return value;
+}
+
+@fn sqrt(x: Float64) -> Float64 {
+    return __builtin_sqrt(x);
+}
+
+@fn pow(base: Float64, exp: Float64) -> Float64 {
+    return __builtin_pow(base, exp);
+}
+
+@fn floor(x: Float64) -> Int64 {
+    return __builtin_floor(x) as Int64;
+}
+
+@fn ceil(x: Float64) -> Int64 {
+    return __builtin_ceil(x) as Int64;
+}
+
+@fn round(x: Float64) -> Int64 {
+    return __builtin_round(x) as Int64;
+}
+
+@fn log(x: Float64) -> Float64 {
+    return __builtin_log(x);
+}
+
+@fn log2(x: Float64) -> Float64 {
+    return __builtin_log2(x);
+}
+
+@fn log10(x: Float64) -> Float64 {
+    return __builtin_log10(x);
+}
+
+@fn sin(x: Float64) -> Float64 {
+    return __builtin_sin(x);
+}
+
+@fn cos(x: Float64) -> Float64 {
+    return __builtin_cos(x);
+}
+
+@fn tan(x: Float64) -> Float64 {
+    return __builtin_tan(x);
+}

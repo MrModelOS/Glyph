@@ -1,0 +1,37 @@
+@module std.io
+
+@fn println(msg: String) -> Void {
+    __builtin_println(msg);
+}
+
+@fn eprintln(msg: String) -> Void {
+    __builtin_eprintln(msg);
+}
+
+@fn print_int(value: Int64) -> Void {
+    __builtin_print_int(value);
+}
+
+@fn print_float(value: Float64) -> Void {
+    __builtin_print_float(value);
+}
+
+@fn print_bool(value: Bool) -> Void {
+    __builtin_print_bool(value);
+}
+
+@fn read_line() -> String {
+    return __builtin_read_line();
+}
+
+@fn file_read(path: String) -> String {
+    return __builtin_file_read(path);
+}
+
+@fn file_write(path: String, content: String) -> Bool {
+    return __builtin_file_write(path, content);
+}
+
+@fn file_append(path: String, content: String) -> Bool {
+    return __builtin_file_append(path, content);
+}

@@ -1,0 +1,65 @@
+@module std.string
+
+@fn len(s: String) -> Int64 {
+    return __builtin_strlen(s) as Int64;
+}
+
+@fn substring(s: String, start: Int64, end: Int64) -> String {
+    return __builtin_substring(s, start, end);
+}
+
+@fn contains(s: String, sub: String) -> Bool {
+    return __builtin_str_contains(s, sub);
+}
+
+@fn replace(s: String, from: String, to: String) -> String {
+    return __builtin_str_replace(s, from, to);
+}
+
+@fn split(s: String, delimiter: String) -> String {
+    return __builtin_str_split(s, delimiter);
+}
+
+@fn trim(s: String) -> String {
+    return __builtin_str_trim(s);
+}
+
+@fn to_upper(s: String) -> String {
+    return __builtin_str_to_upper(s);
+}
+
+@fn to_lower(s: String) -> String {
+    return __builtin_str_to_lower(s);
+}
+
+@fn starts_with(s: String, prefix: String) -> Bool {
+    return __builtin_str_starts_with(s, prefix);
+}
+
+@fn ends_with(s: String, suffix: String) -> Bool {
+    return __builtin_str_ends_with(s, suffix);
+}
+
+@fn parse_int(s: String) -> Option<Int64> {
+    return __builtin_parse_int(s);
+}
+
+@fn parse_float(s: String) -> Option<Float64> {
+    return __builtin_parse_float(s);
+}
+
+@fn int_to_string(value: Int64) -> String {
+    return __builtin_int_to_string(value);
+}
+
+@fn float_to_string(value: Float64) -> String {
+    return __builtin_float_to_string(value);
+}
+
+@fn bool_to_string(value: Bool) -> String {
+    return __builtin_bool_to_string(value);
+}
+
+@fn char_at(s: String, index: Int64) -> String {
+    return __builtin_char_at(s, index);
+}

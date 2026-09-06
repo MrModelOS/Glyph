@@ -1,0 +1,20 @@
+@struct Point {
+    x: Float64,
+    y: Float64,
+}
+
+@impl Point {
+    @fn distance(self: &Point, other: &Point) -> Float64 {
+        let dx: Float64 = self.x - other.x;
+        let dy: Float64 = self.y - other.y;
+        return (dx * dx + dy * dy) as Float64;
+    }
+}
+
+@const PI: Float64 = 3.141592653589793;
+
+@fn main() -> Void {
+    let p1: Point = Point { x: 0.0, y: 0.0 };
+    let p2: Point = Point { x: 3.0, y: 4.0 };
+    print("ok");
+}

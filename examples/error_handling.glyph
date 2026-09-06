@@ -1,0 +1,23 @@
+@module examples.error_handling
+
+@enum DatabaseError {
+    ConnectionFailed,
+    NotFound,
+    QueryTimeout,
+}
+
+@fn divide(a: Float64, b: Float64) -> Result<Float64, DatabaseError> {
+    #guard(b != 0.0) else {
+        return Err(DatabaseError.NotFound);
+    };
+
+    return Ok(a / b);
+}
+
+@fn main() -> Void {
+    let result: Result<Float64, DatabaseError> = divide(10.0, 2.0);
+    match result {
+        | Ok(value) => print("Result: " ++ value)
+        | Err(err) => print("Error occurred")
+    }
+}

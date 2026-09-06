@@ -1,0 +1,25 @@
+@module std.conv
+
+@fn to_string_int(value: Int64) -> String {
+    return __builtin_int_to_string(value);
+}
+
+@fn to_string_float(value: Float64) -> String {
+    return __builtin_float_to_string(value);
+}
+
+@fn to_string_bool(value: Bool) -> String {
+    return __builtin_bool_to_string(value);
+}
+
+@fn to_int(s: String) -> Option<Int64> {
+    return __builtin_parse_int(s);
+}
+
+@fn to_float(s: String) -> Option<Float64> {
+    return __builtin_parse_float(s);
+}
+
+@fn to_bool(s: String) -> Option<Bool> {
+    return __builtin_parse_bool(s);
+}

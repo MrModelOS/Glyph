@@ -1,0 +1,17 @@
+@enum Shape {
+    Circle(Float64),
+    Rectangle(Float64, Float64),
+    Point,
+}
+
+@fn area(s: &Shape) -> Float64 {
+    match s {
+        | Shape::Circle(r) => 3.14159 * r * r
+        | Shape::Rectangle(w, h) => w * h
+        | Shape::Point => 0.0
+    }
+}
+
+@fn main() -> Void {
+    print("ok");
+}

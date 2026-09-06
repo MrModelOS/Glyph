@@ -1,0 +1,5 @@
+@fn main() -> Void {
+    let x: Int64 = 1;
+    let y: Int64 = x as Int64;
+    print("ok");
+}

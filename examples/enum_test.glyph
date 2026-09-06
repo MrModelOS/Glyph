@@ -1,0 +1,34 @@
+@enum Shape {
+    Circle(Float64),
+    Rectangle(Float64, Float64),
+    Point,
+}
+
+@fn area(s: &Shape) -> Float64 {
+    match s {
+        | Shape::Circle(r) => 3.14159 * r * r
+        | Shape::Rectangle(w, h) => w * h
+        | Shape::Point => 0.0
+    }
+}
+
+@fn main() -> Void {
+    let circle: Shape = Shape::Circle(5.0);
+    let rect: Shape = Shape::Rectangle(3.0, 4.0);
+    let point: Shape = Shape::Point;
+
+    let a1: Float64 = area(&circle);
+    let a2: Float64 = area(&rect);
+    let a3: Float64 = area(&point);
+
+    print("Circle area:");
+    print_float(a1);
+
+    print("Rectangle area:");
+    print_float(a2);
+
+    print("Point area:");
+    print_float(a3);
+
+    println("Enum pattern matching works!");
+}

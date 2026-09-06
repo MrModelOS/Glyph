@@ -1,0 +1,44 @@
+@fn main() -> Void {
+    // Test std.math
+    let x: Float64 = 16.0;
+    let root: Float64 = sqrt(x);
+    print("sqrt(16) =");
+    print_float(root);
+
+    let p: Float64 = pow(2.0, 10.0);
+    print("2^10 =");
+    print_float(p);
+
+    let a: Float64 = -5.0;
+    let abs_val: Float64 = abs(a);
+    print("abs(-5) =");
+    print_float(abs_val);
+
+    let m: Float64 = min(3.0, 7.0);
+    print("min(3, 7) =");
+    print_float(m);
+
+    let mx: Float64 = max(3.0, 7.0);
+    print("max(3, 7) =");
+    print_float(mx);
+
+    // Test std.string
+    let s: String = "  Hello, World!  ";
+    let trimmed: String = trim(s);
+    println(trimmed);
+
+    let upper: String = to_upper("hello");
+    println(upper);
+
+    let lower: String = to_lower("WORLD");
+    println(lower);
+
+    // Test std.fs (write and read)
+    let written: Bool = file_write("/tmp/glyph_test.txt", "Hello from Glyph!");
+    if written {
+        let content: String = file_read("/tmp/glyph_test.txt");
+        println(content);
+    }
+
+    println("All math and string tests passed!");
+}

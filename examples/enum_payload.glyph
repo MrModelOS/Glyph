@@ -1,0 +1,47 @@
+@enum Value {
+    IntVal(Int64),
+    FloatVal(Float64),
+    StrVal(String),
+    None,
+}
+
+@fn describe(v: &Value) -> String {
+    match v {
+        | Value::IntVal(n) => "integer"
+        | Value::FloatVal(f) => "float"
+        | Value::StrVal(s) => "string"
+        | Value::None => "nothing"
+    }
+}
+
+@fn add_ten(v: &Value) -> Int64 {
+    match v {
+        | Value::IntVal(n) => n + 10
+        | Value::FloatVal(f) => 0
+        | Value::StrVal(s) => 0
+        | Value::None => 0
+    }
+}
+
+@fn main() -> Void {
+    let a: Value = Value::IntVal(32);
+    let b: Value = Value::FloatVal(2.5);
+    let c: Value = Value::StrVal("hi");
+    let d: Value = Value::None;
+
+    let r1: Int64 = add_ten(&a);
+    let r2: Int64 = add_ten(&b);
+    let r3: Int64 = add_ten(&c);
+    let r4: Int64 = add_ten(&d);
+
+    print("r1 =");
+    print_int(r1);
+    print("r2 =");
+    print_int(r2);
+    print("r3 =");
+    print_int(r3);
+    print("r4 =");
+    print_int(r4);
+
+    println("Enum mixed payload types work!");
+}

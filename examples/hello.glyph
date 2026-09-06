@@ -1,0 +1,7 @@
+@module examples.hello
+
+@fn main() -> Void {
+    let name: String = "World";
+    let greeting: String = "Hello, " ++ name ++ "!";
+    print(greeting);
+}

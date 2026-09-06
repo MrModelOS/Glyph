@@ -1,0 +1,8 @@
+@fn main() -> Void {
+    let val: Int64 = 2;
+    match val {
+        | 1 => print("one")
+        | 2 => print("two")
+        | _ => print("other")
+    }
+}

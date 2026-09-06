@@ -1,0 +1,8 @@
+[package]
+name = "test-project"
+version = "0.1.0"
+description = "A test Glyph project"
+
+[build]
+compiler = "gcc"
+optimization = "-O2"

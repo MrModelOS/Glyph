@@ -1,0 +1,20 @@
+[package]
+name = "my-project"
+version = "0.1.0"
+description = "A Glyph project"
+authors = ["Your Name <you@example.com>"]
+
+[build]
+compiler = "gcc"
+optimization = "-O2"
+std = "glyph-1.0"
+
+[dependencies]
+# stdlib = "glyph-1.0"
+
+[dev-dependencies]
+# test-framework = "glyph-test-1.0"
+
+[profile.release]
+opt-level = 3
+lto = true

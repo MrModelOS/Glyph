@@ -1,0 +1,19 @@
+@module examples.structs
+
+@struct Point {
+    x: Float64,
+    y: Float64,
+}
+
+@fn distance(p1: Point, p2: Point) -> Float64 {
+    let dx: Float64 = p2.x - p1.x;
+    let dy: Float64 = p2.y - p1.y;
+    return (dx * dx + dy * dy);
+}
+
+@fn main() -> Void {
+    let p1: Point = Point { x: 0.0, y: 0.0 };
+    let p2: Point = Point { x: 3.0, y: 4.0 };
+    let dist: Float64 = distance(p1, p2);
+    print("Distance: " ++ dist);
+}

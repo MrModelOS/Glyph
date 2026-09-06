@@ -1,0 +1,21 @@
+@module std.assert
+
+@fn assert(condition: Bool, msg: String) -> Void {
+    __builtin_assert(condition, msg);
+}
+
+@fn assert_eq(a: String, b: String, msg: String) -> Void {
+    __builtin_assert_eq(a, b, msg);
+}
+
+@fn assert_ne(a: String, b: String, msg: String) -> Void {
+    __builtin_assert_ne(a, b, msg);
+}
+
+@fn assert_true(value: Bool, msg: String) -> Void {
+    __builtin_assert_true(value, msg);
+}
+
+@fn assert_false(value: Bool, msg: String) -> Void {
+    __builtin_assert_false(value, msg);
+}

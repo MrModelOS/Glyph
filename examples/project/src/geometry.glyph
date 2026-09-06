@@ -1,0 +1,7 @@
+@use math;
+
+@pub @fn distance(x1: Float64, y1: Float64, x2: Float64, y2: Float64) -> Float64 {
+    let dx: Float64 = x2 - x1;
+    let dy: Float64 = y2 - y1;
+    return sqrt(math::add(math::square(dx), math::square(dy)));
+}
