@@ -47,15 +47,47 @@
 | `Bool` | `int` | `true`/`false` |
 | `String` | `char*` | строки |
 | `Bytes` | `char*` | сырые байты |
-| `List<T>` | `void*` | список; работает как литерал и диапазон |
-| `Option<T>` | `void*` | декларирован; payload-работа ⚠️ |
-| `Result<T, E>` | `void*` | декларирован; payload-работа ⚠️ |
+| `List<T>` | `void*` | список; работает как литерал и диапазон (фиксированный) |
+| `Option<T>` | `GlyphBox*` (в C — `void*`) | коробка `{tag, data}`; `Some(x)`/`None` |
+| `Result<T, E>` | `GlyphBox*` (в C — `void*`) | коробка `{tag, data}`; `Ok(x)`/`Err(e)` |
 | `&T` | `T*` | ссылка на значение (для перечислений в `match`) |
 | `MyStruct`, `MyEnum` | struct/tagged union | пользовательские типы |
 
-⚠️ `Option`/`Result` типы декларируются в системе типов, но построение
-(`Result::Ok(x)`) и сопоставление payload пока не реализованы в кодгене —
-используйте собственные перечисления.
+### `Result` / `Option` с данными
+
+`Result<Ok, E>` и `Option<T>` строятся вариантами и сопоставляются в `match`.
+Payload копируется в кучу (коробка `{ tag, data }`); тег `1` — `Ok`/`Some`,
+`0` — `Err`/`None`:
+
+```glyph
+@fn divide(a: Int64, b: Int64) -> Result<Int64, String> {
+    if b == 0 {
+        return Result::Err("division by zero");
+    }
+    return Result::Ok(a / b);
+}
+
+@fn main() {
+    let q: Int64 = match divide(10, 2) {
+        | Ok(v) => v,
+        | Err(e) => -1
+    };
+    print_int(q);
+
+    let parsed: Option<Float64> = parse_float("2.5");
+    let f: Float64 = match parsed {
+        | Some(v) => v,
+        | None => 0.0
+    };
+    print_float(f);
+}
+```
+
+Замечания:
+- `Option::None`/`Result::Ok(x)` без контекста дают неизвестный параметр (`Type::Void`);
+  в `let` он унифицируется с объявленным типом (`let n: Option<Int64> = Option::None`)
+- `parse_int`/`parse_float`/`to_int`/`to_float` возвращают коробку `Option`
+  (`Some`/`None`) и пригодны для `match`
 
 Литералы:
 

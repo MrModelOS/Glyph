@@ -1120,6 +1120,8 @@ impl Parser {
             }
             Token::If => self.parse_if(),
             Token::Match => self.parse_match(),
+            Token::TypeResult => self.parse_builtin_enum_constructor("Result"),
+            Token::TypeOption => self.parse_builtin_enum_constructor("Option"),
             _ => Err(ParseError::UnexpectedToken(
                 spanned.token.clone(),
                 spanned.line,
@@ -1127,6 +1129,41 @@ impl Parser {
                 "expression".to_string(),
             )),
         }
+    }
+
+    /// Parse a built-in phantom enum constructor: Result::Ok(x), Option::Some(x), Option::None.
+    fn parse_builtin_enum_constructor(
+        &mut self,
+        enum_name: &str,
+    ) -> Result<Expr, ParseError> {
+        self.advance(); // consume Result / Option token
+        self.expect(&Token::DoubleColon)?;
+        let variant = self.expect_ident()?;
+
+        let args = if self.peek() == &Token::LParen {
+            self.advance();
+            let mut args = Vec::new();
+            if self.peek() != &Token::RParen {
+                loop {
+                    args.push(self.parse_expression()?);
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            self.expect(&Token::RParen)?;
+            args
+        } else {
+            vec![]
+        };
+
+        Ok(Expr::EnumInit {
+            enum_name: enum_name.to_string(),
+            variant,
+            args,
+        })
     }
 
     fn parse_if(&mut self) -> Result<Expr, ParseError> {

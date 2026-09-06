@@ -1,0 +1,59 @@
+@struct User { name: String, age: Int64 }
+
+@fn divide(a: Int64, b: Int64) -> Result<Int64, String> {
+    if b == 0 {
+        return Result::Err("division by zero");
+    }
+    return Result::Ok(a / b);
+}
+
+@fn safe_age(u: User) -> Option<Int64> {
+    if u.age < 0 {
+        return Option::None;
+    }
+    return Option::Some(u.age);
+}
+
+@fn main() {
+    let ok: Result<Int64, String> = divide(20, 5);
+    let q: Int64 = match ok {
+        | Ok(v) => v,
+        | Err(e) => -1
+    };
+    print_int(q);
+
+    let fail: Result<Int64, String> = divide(1, 0);
+    let msg: String = match fail {
+        | Ok(v) => int_to_string(v),
+        | Err(e) => e
+    };
+    println(msg);
+
+    let n: Option<Int64> = Option::None;
+    let a: Int64 = match n {
+        | None => 100,
+        | Some(v) => v
+    };
+    print_int(a);
+
+    let s: Option<Int64> = Option::Some(321);
+    let b: Int64 = match s {
+        | Some(v) => v,
+        | None => 100
+    };
+    print_int(b);
+
+    let parsed: Option<Float64> = parse_float("2.5");
+    let f: Float64 = match parsed {
+        | Some(v) => v,
+        | None => 0.0
+    };
+    print_float(f);
+
+    let lucy: User = User { name: "Lucy", age: 25 };
+    let age: Int64 = match safe_age(lucy) {
+        | Some(v) => v,
+        | None => -1
+    };
+    print_int(age);
+}

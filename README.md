@@ -21,8 +21,8 @@ Glyph транслируется в C-код (GNU statement expressions) и со
 - Модули: `@module`, `@use`, `@pub`, квалифицированные вызовы `math::sqrt`
 - `@const` — именованные константы (компилируются в `static const`)
 - Типизированные списки `List<T>`: литералы `[..]`, индексация `arr[i]`, диапазоны `0..10`
-- Обработка ошибок `Result`/`Option` и обобщения декларируются, но payload-конструкция
-  и сопоставление ещё в работе (см. [Ограничения](#ограничения))
+- `Result`/`Option` с данными: `Result::Ok(x)`/`Option::Some(x)` — построение и
+  сопоставление (`Ok(v)`/`Some(v)` в `match`) с payload, в т.ч. из `parse_int`/`parse_float`
 - Встроенный тестовый фреймворк: `@test`, ассерты, `glyphc test`
 
 ## Установка
@@ -189,6 +189,35 @@ let total: Int64 = 0;
 for i in 1..=5 { total = total + i; }           // 15
 ```
 
+### `Result` / `Option` с данными
+
+`Result<T, E>` и `Option<T>` строятся через варианты и сопоставляются в `match`
+с payload:
+
+```glyph
+@fn divide(a: Int64, b: Int64) -> Result<Int64, String> {
+    if b == 0 {
+        return Result::Err("division by zero");
+    }
+    return Result::Ok(a / b);
+}
+
+@fn main() {
+    let q: Int64 = match divide(10, 2) {
+        | Ok(v) => v,
+        | Err(e) => -1
+    };
+    print_int(q);
+
+    let p: Option<Float64> = parse_float("2.5");   // Some(payload) / None
+    let f: Float64 = match p {
+        | Some(v) => v,
+        | None => 0.0
+    };
+    print_float(f);
+}
+```
+
 ## Ассерты и тесты
 
 ```glyph
@@ -270,13 +299,13 @@ glyphc/
 
 ## Ограничения
 
-- `Result`/`Option` с данными (`Result::Ok(x)`) пока нельзя ни построить, ни сопоставить;
-  используйте собственные перечисления (см. `error_handling.glyph`)
+- `Result`/`Option`: фиксированная коробка `void*` (payload копируется в кучу);
+  `Result::Ok` без контекста выводит неизвестный тип ошибки `E`
 - `List<T>` динамические операции (`append`, `len`, рост размера) в работе;
   сейчас доступны литералы и индексация фиксированных списков
 - Конкурентность (`spawn`, `await`, каналы) в поверхностном языке ещё нет
 - LSP-сервер — экспериментальный
-- Планы v1.1: полноценные `Result`/`Option`, динамические `List<T>`, обобщения
+- Планы v1.1: динамические `List<T>`, обобщения
 
 ## Лицензия
 

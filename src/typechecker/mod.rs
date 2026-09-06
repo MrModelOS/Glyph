@@ -376,7 +376,7 @@ impl TypeChecker {
                 Ok(())
             }
             TopLevelItem::Impl {
-                type_name,
+                type_name: _,
                 methods,
                 ..
             } => {
@@ -496,16 +496,21 @@ impl TypeChecker {
             } => {
                 let value_type = self.check_expression(value)?;
 
-                if let Some(expected) = ty {
+                let stored = if let Some(expected) = ty {
                     if !self.types_compatible(expected, &value_type) {
                         return Err(TypeError::TypeMismatch {
                             expected: format!("{:?}", expected),
                             found: format!("{:?}", value_type),
                         });
                     }
-                }
+                    // Prefer the declared type: it carries the concrete phantom
+                    // parameter (e.g. Option::None() resolves to Option<Void>).
+                    expected.clone()
+                } else {
+                    value_type
+                };
 
-                self.env.define_variable(name.clone(), value_type);
+                self.env.define_variable(name.clone(), stored);
                 Ok(None)
             }
             Stmt::Assignment { target, value } => {
@@ -982,6 +987,7 @@ impl TypeChecker {
                     _ => expr_type.clone(),
                 };
 
+                let mut result_ty: Option<Type> = None;
                 for arm in arms {
                     let mut arm_env = self.env.clone();
                     self.check_pattern(&arm.pattern, &match_type, &mut arm_env)?;
@@ -996,11 +1002,24 @@ impl TypeChecker {
                     }
 
                     let mut checker = TypeChecker { env: arm_env };
-                    checker.check_expression(&arm.body)?;
+                    let body_ty = checker.check_expression(&arm.body)?;
+                    if result_ty.is_none() {
+                        result_ty = Some(body_ty);
+                    } else if let Some(prev) = &result_ty {
+                        // A Void arm body (e.g. an empty-branch block) must not
+                        // downgrade the common type of the match expression.
+                        if !matches!(prev, Type::Void) && !matches!(body_ty, Type::Void) {
+                            if !self.types_compatible(prev, &body_ty) {
+                                return Err(TypeError::TypeMismatch {
+                                    expected: format!("{:?}", prev),
+                                    found: format!("{:?}", body_ty),
+                                });
+                            }
+                        }
+                    }
                 }
 
-                // TODO: Return common type of all arms
-                Ok(Type::Void)
+                Ok(result_ty.unwrap_or(Type::Void))
             }
 
             Expr::If {
@@ -1090,6 +1109,63 @@ impl TypeChecker {
             }
 
             Expr::EnumInit { enum_name, variant, args } => {
+                // Built-in phantom enums: Option::Some/None, Result::Ok/Err
+                if enum_name == "Option" {
+                    return match variant.as_str() {
+                        "Some" => {
+                            if args.len() != 1 {
+                                return Err(TypeError::WrongArgumentCount {
+                                    expected: 1,
+                                    found: args.len(),
+                                });
+                            }
+                            let arg_type = self.check_expression(&args[0])?;
+                            Ok(Type::Option(Box::new(arg_type)))
+                        }
+                        "None" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::WrongArgumentCount {
+                                    expected: 0,
+                                    found: args.len(),
+                                });
+                            }
+                            Ok(Type::Option(Box::new(Type::Void)))
+                        }
+                        _ => Err(TypeError::UndefinedVariable(format!(
+                            "Option::{}",
+                            variant
+                        ))),
+                    };
+                }
+                if enum_name == "Result" {
+                    return match variant.as_str() {
+                        "Ok" => {
+                            if args.len() != 1 {
+                                return Err(TypeError::WrongArgumentCount {
+                                    expected: 1,
+                                    found: args.len(),
+                                });
+                            }
+                            let arg_type = self.check_expression(&args[0])?;
+                            Ok(Type::Result(Box::new(arg_type), Box::new(Type::Void)))
+                        }
+                        "Err" => {
+                            if args.len() != 1 {
+                                return Err(TypeError::WrongArgumentCount {
+                                    expected: 1,
+                                    found: args.len(),
+                                });
+                            }
+                            let arg_type = self.check_expression(&args[0])?;
+                            Ok(Type::Result(Box::new(Type::Void), Box::new(arg_type)))
+                        }
+                        _ => Err(TypeError::UndefinedVariable(format!(
+                            "Result::{}",
+                            variant
+                        ))),
+                    };
+                }
+
                 // Check if the enum type exists
                 let type_def = self
                     .env
@@ -1193,6 +1269,67 @@ impl TypeChecker {
             Pattern::EnumVariant { enum_name: _, variant, data } => {
                 // Check if variant matches expected type
                 match expected_type {
+                    Type::Option(inner) => {
+                        match variant.as_str() {
+                            "Some" => {
+                                if data.as_ref().map_or(false, |d| d.len() != 1)
+                                    || data.is_none()
+                                {
+                                    return Err(TypeError::WrongArgumentCount {
+                                        expected: 1,
+                                        found: data.as_ref().map_or(0, |d| d.len()),
+                                    });
+                                }
+                                self.check_pattern(&data.as_ref().unwrap()[0], inner, env)?;
+                                Ok(())
+                            }
+                            "None" => {
+                                if data.is_some() {
+                                    return Err(TypeError::WrongArgumentCount {
+                                        expected: 0,
+                                        found: 1,
+                                    });
+                                }
+                                Ok(())
+                            }
+                            _ => Err(TypeError::UndefinedVariable(format!(
+                                "Option::{}",
+                                variant
+                            ))),
+                        }
+                    }
+                    Type::Result(ok_ty, err_ty) => {
+                        match variant.as_str() {
+                            "Ok" => {
+                                if data.as_ref().map_or(false, |d| d.len() != 1)
+                                    || data.is_none()
+                                {
+                                    return Err(TypeError::WrongArgumentCount {
+                                        expected: 1,
+                                        found: data.as_ref().map_or(0, |d| d.len()),
+                                    });
+                                }
+                                self.check_pattern(&data.as_ref().unwrap()[0], ok_ty, env)?;
+                                Ok(())
+                            }
+                            "Err" => {
+                                if data.as_ref().map_or(false, |d| d.len() != 1)
+                                    || data.is_none()
+                                {
+                                    return Err(TypeError::WrongArgumentCount {
+                                        expected: 1,
+                                        found: data.as_ref().map_or(0, |d| d.len()),
+                                    });
+                                }
+                                self.check_pattern(&data.as_ref().unwrap()[0], err_ty, env)?;
+                                Ok(())
+                            }
+                            _ => Err(TypeError::UndefinedVariable(format!(
+                                "Result::{}",
+                                variant
+                            ))),
+                        }
+                    }
                     Type::Custom(type_name) => {
                         let type_def = env.get_type(type_name).cloned();
                         if let Some(TypeDefinition::Enum { variants }) = type_def {
@@ -1246,9 +1383,12 @@ impl TypeChecker {
                 self.types_compatible(k1, k2) && self.types_compatible(v1, v2)
             }
             (Type::Result(o1, e1), Type::Result(o2, e2)) => {
-                self.types_compatible(o1, o2) && self.types_compatible(e1, e2)
+                (self.is_unknown(e1) || self.is_unknown(e2) || self.types_compatible(e1, e2))
+                    && (self.is_unknown(o1) || self.is_unknown(o2) || self.types_compatible(o1, o2))
             }
-            (Type::Option(a), Type::Option(b)) => self.types_compatible(a, b),
+            (Type::Option(a), Type::Option(b)) => {
+                self.is_unknown(a) || self.is_unknown(b) || self.types_compatible(a, b)
+            }
             (Type::Async(a), Type::Async(b)) => self.types_compatible(a, b),
             (Type::Channel(a), Type::Channel(b)) => self.types_compatible(a, b),
             (Type::Ref(a), Type::Ref(b)) => self.types_compatible(a, b),
@@ -1256,6 +1396,12 @@ impl TypeChecker {
             (Type::Array(a, s1), Type::Array(b, s2)) => self.types_compatible(a, b) && s1 == s2,
             _ => false,
         }
+    }
+
+    /// A `Void` type inside Option/Result acts as an unknown placeholder:
+    /// `Option::None()` is `Option<Void>` and unifies with `Option<Int64>`.
+    fn is_unknown(&self, t: &Type) -> bool {
+        matches!(t, Type::Void)
     }
 }
 
@@ -1344,6 +1490,70 @@ mod tests {
 
         let mut checker = TypeChecker::new();
         assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_result_option() {
+        let input = "\
+@fn divide(a: Int64, b: Int64) -> Result<Int64, String> {
+    if b == 0 {
+        return Result::Err(\"div0\");
+    }
+    return Result::Ok(a / b);
+}
+@fn main() -> Void {
+    let r: Result<Int64, String> = divide(10, 2);
+    let q: Int64 = match r {
+        | Ok(v) => v,
+        | Err(e) => -1
+    };
+    let absent: Option<Int64> = Option::None;
+    let z: Int64 = match absent {
+        | None => 42,
+        | Some(v) => v
+    };
+    let present: Option<Int64> = Option::Some(7);
+    let w: Int64 = match present {
+        | Some(v) => v,
+        | None => 0
+    };
+    let p: Option<Float64> = parse_float(\"1.5\");
+    let f: Float64 = match p {
+        | Some(v) => v,
+        | None => 0.0
+    };
+    print_int(q);
+    print_int(z);
+    print_int(w);
+    print_float(f);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_result_option_bad_variant() {
+        let input = "\
+@fn main() -> Void {
+    let r: Result<Int64, String> = Result::Ok(1);
+    let q: Int64 = match r {
+        | Some(v) => v,
+        | None => 0
+    };
+    print_int(q);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
     }
 
     #[test]

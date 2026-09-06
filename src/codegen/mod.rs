@@ -101,10 +101,10 @@ impl CCodegen {
         writeln!(self.output, "char* glyph_str_to_upper(const char* s);").unwrap();
         writeln!(self.output, "char* glyph_str_to_lower(const char* s);").unwrap();
         writeln!(self.output, "char glyph_char_at(const char* s, int64_t i);").unwrap();
-        writeln!(self.output, "typedef struct {{ int64_t ok; int64_t val; }} OptionInt;").unwrap();
-        writeln!(self.output, "OptionInt glyph_parse_int(const char* s);").unwrap();
-        writeln!(self.output, "typedef struct {{ int ok; double val; }} OptionFloat;").unwrap();
-        writeln!(self.output, "OptionFloat glyph_parse_float(const char* s);").unwrap();
+        writeln!(self.output, "typedef struct {{ int64_t tag; void* data; }} GlyphBox;").unwrap();
+        writeln!(self.output, "void* glyph_box_construct(int64_t tag, const void* data, int64_t size);").unwrap();
+        writeln!(self.output, "void* glyph_parse_int(const char* s);").unwrap();
+        writeln!(self.output, "void* glyph_parse_float(const char* s);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Math").unwrap();
@@ -861,6 +861,29 @@ impl CCodegen {
                 write!(self.output, "}}").unwrap();
             }
             Expr::EnumInit { enum_name, variant, args } => {
+                if enum_name == "Result" || enum_name == "Option" {
+                    // Boxed phantom enum. The payload temp must stay alive for
+                    // the duration of the copying call, so the whole call lives
+                    // inside a GNU statement expression.
+                    let present = matches!(variant.as_str(), "Some" | "Ok");
+                    if args.is_empty() {
+                        write!(self.output, "glyph_box_construct(0, NULL, 0)").unwrap();
+                    } else {
+                        write!(
+                            self.output,
+                            "({{ __auto_type _p = "
+                        )
+                        .unwrap();
+                        self.emit_expression(&args[0])?;
+                        write!(
+                            self.output,
+                            "; glyph_box_construct({}, &_p, sizeof(_p)); }})",
+                            if present { "1" } else { "0" }
+                        )
+                        .unwrap();
+                    }
+                    return Ok(());
+                }
                 // Generate: (EnumName){ .tag = EnumName_Tag_Variant, .data.Variant.field0 = arg0, ... }
                 write!(self.output, "({}){{ .tag = {}_Tag_{}, ", enum_name, enum_name, variant).unwrap();
                 for (i, arg) in args.iter().enumerate() {
@@ -871,6 +894,93 @@ impl CCodegen {
                 write!(self.output, "}}").unwrap();
             }
             Expr::Match { expr, arms } => {
+                // Boxed phantom-enum match: Option<T> / Result<T, E>
+                // Resolve and clone first to release the borrow on self.
+                let phantom = self.resolved_expr_type(expr).and_then(|t| match t {
+                    Type::Option(inner) => Some((*inner, None)),
+                    Type::Result(ok, err) => Some((*ok, Some(*err))),
+                    _ => None,
+                });
+                if let Some((present_ty, absent_ty)) = phantom {
+                    writeln!(self.output, "({{").unwrap();
+                    self.indent += 1;
+
+                    self.emit_indent();
+                    write!(self.output, "GlyphBox* _match_val_box = (GlyphBox*)(").unwrap();
+                    self.emit_expression(expr)?;
+                    writeln!(self.output, ");").unwrap();
+
+                    // Flat ternary chain over box tags (present=1 / absent=0)
+                    self.emit_indent();
+                    for (i, arm) in arms.iter().enumerate() {
+                        if i > 0 {
+                            write!(self.output, " : ").unwrap();
+                        }
+                        if i < arms.len() - 1 {
+                            match &arm.pattern {
+                                Pattern::EnumVariant { variant, .. } => {
+                                    let present = matches!(variant.as_str(), "Some" | "Ok");
+                                    write!(
+                                        self.output,
+                                        "(_match_val_box->tag == {}) ? ",
+                                        if present { "1" } else { "0" }
+                                    )
+                                    .unwrap();
+                                }
+                                Pattern::Identifier(_) | Pattern::Wildcard => {}
+                                Pattern::IntegerLiteral(v) => {
+                                    write!(self.output, "(_match_val_box == ({}) ? ", v).unwrap();
+                                }
+                                Pattern::StringLiteral(s) => {
+                                    write!(self.output, "(strcmp(_match_val_box, \"{}\") == 0) ? ", s)
+                                        .unwrap();
+                                }
+                                Pattern::BoolLiteral(b) => {
+                                    write!(self.output, "(_match_val_box == {}) ? ", if *b { "1" } else { "0" }).unwrap();
+                                }
+                            }
+                        }
+
+                        // Arm body
+                        write!(self.output, "({{ ").unwrap();
+                        match &arm.pattern {
+                            Pattern::EnumVariant { variant, data, .. } => {
+                                let payload_ty: Option<&Type> = match variant.as_str() {
+                                    "Some" | "Ok" => Some(&present_ty),
+                                    "Err" => absent_ty.as_ref(),
+                                    _ => None,
+                                };
+                                if let (Some(dp), Some(pt)) = (data, payload_ty) {
+                                    for dp in dp {
+                                        if let Pattern::Identifier(name) = dp {
+                                            write!(
+                                                self.output,
+                                                "__auto_type {} = *(({}*)_match_val_box->data); ",
+                                                name,
+                                                self.type_to_c(pt)
+                                            )
+                                            .unwrap();
+                                        }
+                                    }
+                                }
+                            }
+                            Pattern::Identifier(name) => {
+                                write!(self.output, "__auto_type {} = _match_val_box; ", name)
+                                    .unwrap();
+                            }
+                            _ => {}
+                        }
+                        self.emit_expression(&arm.body)?;
+                        write!(self.output, "; }})").unwrap();
+                    }
+                    writeln!(self.output, ";").unwrap();
+
+                    self.indent -= 1;
+                    self.emit_indent();
+                    writeln!(self.output, "}})").unwrap();
+                    return Ok(());
+                }
+
                 // Use GNU Statement Expression for match with nested ternary
                 writeln!(self.output, "({{").unwrap();
                 self.indent += 1;
@@ -1107,6 +1217,55 @@ impl CCodegen {
         }
     }
 
+    /// Resolve the full compile-time type of an expression (best-effort).
+    /// Returns an owned copy to avoid borrow conflicts with &self.
+    fn resolved_expr_type(&self, expr: &Expr) -> Option<Type> {
+        match expr {
+            Expr::Identifier(name) => self.variable_types.get(name).cloned().map(|t| match t {
+                Type::Ref(inner) => *inner,
+                _ => t,
+            }),
+            Expr::Cast { target_type, .. } => Some(target_type.clone()),
+            Expr::FieldAccess { ref object, field } => {
+                let obj_name = self.resolved_custom_type_name(object)?;
+                let fields = self.struct_fields.get(&obj_name)?;
+                fields
+                    .iter()
+                    .find(|(n, _)| n == field)
+                    .map(|(_, t)| match t {
+                        Type::Ref(inner) => (**inner).clone(),
+                        _ => t.clone(),
+                    })
+            }
+            Expr::Ref(inner) => self.resolved_expr_type(inner),
+            Expr::FunctionCall { name, .. } => {
+                let callee = match &**name {
+                    Expr::Identifier(n) => n,
+                    _ => return None,
+                };
+                self.functions
+                    .get(callee)
+                    .and_then(|s| s.return_type.clone())
+                    .map(|rt| match rt {
+                        Type::Ref(inner) => *inner,
+                        _ => rt,
+                    })
+            }
+            Expr::MethodCall { object, method, .. } => {
+                let ty = self.resolved_custom_type_name(object)?;
+                let key = format!("{}.{}", ty, method);
+                self.functions
+                    .get(&key)
+                    .and_then(|s| s.return_type.clone())
+                    .map(|rt| match rt {
+                        Type::Ref(inner) => *inner,
+                        _ => rt,
+                    })
+            }
+            _ => None,
+        }
+    }
+
     fn emit_to_string(&mut self, expr: &Expr) -> Result<(), CodegenError> {
         match expr {
             Expr::IntegerLiteral(_) => {
@@ -1207,14 +1366,20 @@ impl CCodegen {
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
-        // Parse functions
-        writeln!(self.output, "OptionInt glyph_parse_int(const char* s) {{").unwrap();
-        writeln!(self.output, "    char* end; long v = strtol(s, &end, 10);").unwrap();
-        writeln!(self.output, "    if (end == s) return (OptionInt){{0, 0}}; return (OptionInt){{1, v}};").unwrap();
+        // Parse functions (return boxed Option so downstream code can match on them)
+        writeln!(self.output, "void* glyph_box_construct(int64_t tag, const void* data, int64_t size) {{").unwrap();
+        writeln!(self.output, "    GlyphBox* b = (GlyphBox*)malloc(sizeof(GlyphBox));").unwrap();
+        writeln!(self.output, "    b->tag = tag; b->data = NULL;").unwrap();
+        writeln!(self.output, "    if (data && size > 0) {{ b->data = malloc((size_t)size); memcpy(b->data, data, (size_t)size); }}").unwrap();
+        writeln!(self.output, "    return (void*)b;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "OptionFloat glyph_parse_float(const char* s) {{").unwrap();
+        writeln!(self.output, "void* glyph_parse_int(const char* s) {{").unwrap();
+        writeln!(self.output, "    char* end; int64_t v = strtoll(s, &end, 10);").unwrap();
+        writeln!(self.output, "    if (end == s) return glyph_box_construct(0, NULL, 0); return glyph_box_construct(1, &v, sizeof(v));").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "void* glyph_parse_float(const char* s) {{").unwrap();
         writeln!(self.output, "    char* end; double v = strtod(s, &end);").unwrap();
-        writeln!(self.output, "    if (end == s) return (OptionFloat){{0, 0.0}}; return (OptionFloat){{1, v}};").unwrap();
+        writeln!(self.output, "    if (end == s) return glyph_box_construct(0, NULL, 0); return glyph_box_construct(1, &v, sizeof(v));").unwrap();
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 

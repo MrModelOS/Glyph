@@ -21,6 +21,7 @@ glyphc run --input examples/hello.glyph
 | `impl_const.glyph` | `@const`, структуры |
 | `methods.glyph` | методы через `@impl`: `p.norm()`, `p.scaled(2.0)` |
 | `lists.glyph` | типизированные `List<T>`: литералы, индексация примитивов и структур |
+| `result_option.glyph` | `Result`/`Option` с данными: `Ok(x)`/`Some(x)`, `match` с payload |
 | `enums.glyph` | перечисления с дискриминантами, `match` |
 | `enum_test.glyph` | перечисления с данными, `match` с привязками |
 | `enum_data.glyph` | варианты с данными, поля |
