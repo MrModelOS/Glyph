@@ -38,6 +38,7 @@ pub enum Token {
     // Declarations
     Const,
     Pub,
+    Test,
 
     // Types
     TypeString,
@@ -456,6 +457,7 @@ impl Lexer {
                                 "impl" => Token::Impl,
                                 "const" => Token::Const,
                                 "pub" => Token::Pub,
+                                "test" => Token::Test,
                                 _ => return Err(LexerError::UnexpectedChar('@', line, column)),
                             }
                         }
@@ -591,6 +593,15 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens[0].token, Token::Guard);
         assert_eq!(tokens[6].token, Token::Inline);
+    }
+
+    #[test]
+    fn test_test_attribute() {
+        let mut lexer = Lexer::new("@test @fn test_add() -> Void {}");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].token, Token::Test);
+        assert_eq!(tokens[1].token, Token::Fn);
+        assert_eq!(tokens[2].token, Token::Identifier("test_add".to_string()));
     }
 
     #[test]

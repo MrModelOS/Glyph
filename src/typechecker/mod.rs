@@ -51,6 +51,12 @@ pub enum TypeError {
 
     #[error("Const type mismatch: expected {expected}, found {found}")]
     ConstTypeMismatch { expected: String, found: String },
+
+    #[error("Test function '{name}' must not have parameters")]
+    TestFunctionParams { name: String },
+
+    #[error("Test function '{name}' must return Void (found {found})")]
+    TestFunctionReturn { name: String, found: String },
 }
 
 #[derive(Debug, Clone)]
@@ -235,6 +241,11 @@ impl TypeChecker {
         env.define_function("assert_true".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
         env.define_function("assert_false".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
 
+        // test framework
+        env.define_function("__builtin_assert".to_string(), FunctionSignature { params: vec![("condition".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
+        env.define_function("__builtin_assert_true".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
+        env.define_function("__builtin_assert_false".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
+
         TypeChecker { env }
     }
 
@@ -270,8 +281,25 @@ impl TypeChecker {
                     params,
                     return_type,
                     is_async,
+                    is_test,
                     ..
                 } => {
+                    if *is_test {
+                        if !params.is_empty() {
+                            return Err(TypeError::TestFunctionParams {
+                                name: name.clone(),
+                            });
+                        }
+                        match return_type {
+                            Some(Type::Void) | None => {}
+                            Some(other) => {
+                                return Err(TypeError::TestFunctionReturn {
+                                    name: name.clone(),
+                                    found: format!("{:?}", other),
+                                });
+                            }
+                        }
+                    }
                     let sig = FunctionSignature {
                         params: params
                             .iter()
@@ -364,6 +392,81 @@ impl TypeChecker {
             }
             _ => Ok(()),
         }
+    }
+
+    /// Names of assertion builtins that accept polymorphic values
+    fn is_polymorphic_assert(name: &str) -> bool {
+        matches!(
+            name,
+            "assert"
+                | "assert_eq"
+                | "assert_ne"
+                | "assert_true"
+                | "assert_false"
+                | "__builtin_assert"
+                | "__builtin_assert_eq"
+                | "__builtin_assert_ne"
+                | "__builtin_assert_true"
+                | "__builtin_assert_false"
+        )
+    }
+
+    fn check_assert_builtin_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<Type, TypeError> {
+        let is_eq = name.ends_with("assert_eq") || name.ends_with("assert_ne");
+
+        // assert/assert_true/assert_false: (Bool, String)
+        // assert_eq/assert_ne: (T, T, String)
+        let expected_args = if is_eq { 3 } else { 2 };
+        if args.len() != expected_args {
+            return Err(TypeError::WrongArgumentCount {
+                expected: expected_args,
+                found: args.len(),
+            });
+        }
+
+        // Check message string
+        let msg_type = self.check_expression(&args[if is_eq { 2 } else { 1 }])?;
+        if !self.types_compatible(&Type::String, &msg_type) {
+            return Err(TypeError::TypeMismatch {
+                expected: "String".to_string(),
+                found: format!("{:?}", msg_type),
+            });
+        }
+
+        if is_eq {
+            let a = self.check_expression(&args[0])?;
+            let b = self.check_expression(&args[1])?;
+            let supported = matches!(
+                a,
+                Type::Int64 | Type::UInt64 | Type::Float64 | Type::Bool | Type::String
+            );
+            if !supported {
+                return Err(TypeError::TypeMismatch {
+                    expected: "Int64, UInt64, Float64, Bool or String".to_string(),
+                    found: format!("{:?}", a),
+                });
+            }
+            if !self.types_compatible(&a, &b) {
+                return Err(TypeError::TypeMismatch {
+                    expected: format!("{:?}", a),
+                    found: format!("{:?}", b),
+                });
+            }
+        } else {
+            let cond = self.check_expression(&args[0])?;
+            if !self.types_compatible(&Type::Bool, &cond) {
+                return Err(TypeError::TypeMismatch {
+                    expected: "Bool".to_string(),
+                    found: format!("{:?}", cond),
+                });
+            }
+        }
+
+        Ok(Type::Void)
     }
 
     fn check_block(
@@ -621,6 +724,11 @@ impl TypeChecker {
                     }
                     _ => return Err(TypeError::CannotCallNonFunction("non-identifier".to_string())),
                 };
+
+                // Polymorphic assert builtins (work on Int64/UInt64/Float64/Bool/String)
+                if Self::is_polymorphic_assert(&func_name) {
+                    return self.check_assert_builtin_call(&func_name, args);
+                }
 
                 let sig = self
                     .env

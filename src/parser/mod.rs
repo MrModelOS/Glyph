@@ -86,18 +86,27 @@ impl Parser {
     }
 
     fn parse_top_level_item(&mut self) -> Result<TopLevelItem, ParseError> {
-        // Check for @pub visibility modifier
-        let pub_vis = if self.peek() == &Token::Pub {
-            self.advance(); // consume @pub
-            Visibility::Public
-        } else {
-            Visibility::Private
-        };
+        // Check for @pub visibility and @test attributes (any order)
+        let mut pub_vis = Visibility::Private;
+        let mut is_test = false;
+        loop {
+            match self.peek() {
+                Token::Pub => {
+                    self.advance(); // consume @pub
+                    pub_vis = Visibility::Public;
+                }
+                Token::Test => {
+                    self.advance(); // consume @test
+                    is_test = true;
+                }
+                _ => break,
+            }
+        }
 
         match self.peek() {
             Token::Module => self.parse_module(),
             Token::Use => self.parse_use(),
-            Token::Fn => self.parse_function_with_vis(pub_vis),
+            Token::Fn => self.parse_function_with_vis(pub_vis, is_test),
             Token::Struct => self.parse_struct_with_vis(pub_vis),
             Token::Enum => self.parse_enum_with_vis(pub_vis),
             Token::Trait => self.parse_trait_with_vis(pub_vis),
@@ -143,7 +152,11 @@ impl Parser {
         Ok(TopLevelItem::Use { path })
     }
 
-    fn parse_function_with_vis(&mut self, pub_vis: Visibility) -> Result<TopLevelItem, ParseError> {
+    fn parse_function_with_vis(
+        &mut self,
+        pub_vis: Visibility,
+        is_test: bool,
+    ) -> Result<TopLevelItem, ParseError> {
         self.advance(); // consume @fn
 
         let is_async = if self.peek() == &Token::Async {
@@ -207,6 +220,7 @@ impl Parser {
             return_type,
             body,
             is_async,
+            is_test,
             pub_vis,
         })
     }
@@ -1318,7 +1332,7 @@ mod tests {
         }
     }
 
-    #[test]
+#[test]
     fn test_parse_struct() {
         let input = "@struct Point { x: Float64, y: Float64 }";
         let mut lexer = Lexer::new(input);
@@ -1333,6 +1347,32 @@ mod tests {
                 assert_eq!(fields.len(), 2);
             }
             _ => panic!("Expected struct"),
+        }
+    }
+
+    #[test]
+    fn test_parse_test_attribute() {
+        let input = "@test @fn test_something() -> Void { }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        assert_eq!(program.items.len(), 1);
+        match &program.items[0] {
+            TopLevelItem::Function {
+                name,
+                is_test,
+                params,
+                return_type,
+                ..
+            } => {
+                assert_eq!(name, "test_something");
+                assert!(is_test);
+                assert_eq!(params.len(), 0);
+                assert_eq!(return_type, &Some(Type::Void));
+            }
+            _ => panic!("Expected function"),
         }
     }
 

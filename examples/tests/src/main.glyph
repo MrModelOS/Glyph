@@ -1,0 +1,17 @@
+@use calc;
+
+@fn main() -> Void {
+    let s: Int64 = calc::add(10, 20);
+    print_int(s);
+    println("");
+}
+
+@test @fn test_main_add() -> Void {
+    assert_eq(calc::add(3, 3), 6, "calc::add(3,3) == 6");
+}
+
+@test @fn test_main_bool() -> Void {
+    let flag: Bool = true;
+    assert(flag, "flag is true");
+    assert_false(!flag, "!flag is false");
+}

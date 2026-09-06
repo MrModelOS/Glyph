@@ -268,6 +268,7 @@ pub enum TopLevelItem {
         return_type: Option<Type>,
         body: Vec<Stmt>,
         is_async: bool,
+        is_test: bool,
         pub_vis: Visibility,
     },
 
