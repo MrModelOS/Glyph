@@ -1,20 +1,28 @@
+@module examples.impl_const
+
 @struct Point {
     x: Float64,
     y: Float64,
 }
 
-@impl Point {
-    @fn distance(self: &Point, other: &Point) -> Float64 {
-        let dx: Float64 = self.x - other.x;
-        let dy: Float64 = self.y - other.y;
-        return (dx * dx + dy * dy) as Float64;
-    }
+@const PI: Float64 = 3.141592653589793;
+
+@fn distance(a: Point, b: Point) -> Float64 {
+    let dx: Float64 = b.x - a.x;
+    let dy: Float64 = b.y - a.y;
+    return sqrt(dx * dx + dy * dy);
 }
 
-@const PI: Float64 = 3.141592653589793;
+@fn circle_length(radius: Float64) -> Float64 {
+    return 2.0 * PI * radius;
+}
 
 @fn main() -> Void {
     let p1: Point = Point { x: 0.0, y: 0.0 };
     let p2: Point = Point { x: 3.0, y: 4.0 };
-    print("ok");
+    let d: Float64 = distance(p1, p2);
+    print("distance(0,0)-(3,4) = " ++ float_to_string(d));
+
+    let l: Float64 = circle_length(2.0);
+    print("circle_length(2.0) = " ++ float_to_string(l));
 }

@@ -29,7 +29,7 @@ enum Commands {
         input: PathBuf,
 
         /// Output file path
-        #[arg(short, long, default_value = "output.ll")]
+        #[arg(short, long, default_value = "output.c")]
         output: PathBuf,
 
         /// Print LLVM IR to stdout

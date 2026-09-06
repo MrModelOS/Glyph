@@ -8,14 +8,14 @@
 
 @fn status_text(status: HttpStatus) -> String {
     match status {
-        | Ok => "OK"
-        | NotFound => "Not Found"
-        | InternalError => "Internal Server Error"
+        | HttpStatus::Ok => "OK"
+        | HttpStatus::NotFound => "Not Found"
+        | HttpStatus::InternalError => "Internal Server Error"
     }
 }
 
 @fn main() -> Void {
-    let status: HttpStatus = HttpStatus.Ok;
+    let status: HttpStatus = HttpStatus::Ok;
     let text: String = status_text(status);
     print(text);
 }

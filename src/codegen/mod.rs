@@ -255,6 +255,18 @@ impl CCodegen {
 
         writeln!(self.output, "").unwrap();
 
+        // Const definitions
+        for (name, (ty, value)) in &self.constants {
+            let c = match self.const_expr_to_c(value, &mut std::collections::HashSet::new()) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Codegen error for const '{}': {}", name, e);
+                    std::process::exit(1);
+                }
+            };
+            writeln!(self.output, "static const {} {} = {};", self.type_to_c(ty), name, c).unwrap();
+        }
+
         // Forward declarations
         for item in &program.items {
             if let TopLevelItem::Function {
@@ -547,22 +559,36 @@ impl CCodegen {
                 iterable,
                 body,
             } => {
-                // Simple for loop: generate a temporary array or use pointer iteration
-                self.emit_indent();
-                write!(self.output, "/* for {} in */ for (int _i = 0; _i < 10; _i++) {{", variable).unwrap();
-                self.indent += 1;
-
-                // TODO: Proper range/iterator support
-                self.emit_indent();
-                writeln!(self.output, "{} = _i;", variable).unwrap();
-
-                for stmt in body {
-                    self.emit_statement(stmt)?;
+                if let Expr::Range { start, end, inclusive } = iterable {
+                    // Range: int64_t loop variable + counter
+                    let op = if *inclusive { "<=" } else { "<" };
+                    self.emit_indent();
+                    write!(self.output, "{{ int64_t _start = ").unwrap();
+                    self.emit_expression(start)?;
+                    write!(self.output, ", _end = ").unwrap();
+                    self.emit_expression(end)?;
+                    write!(self.output, ", _i; int64_t {}; for (_i = _start; _i {} _end; _i++) {{ {} = _i;", variable, op, variable).unwrap();
+                    self.indent += 1;
+                    for stmt in body {
+                        self.emit_statement(stmt)?;
+                    }
+                    self.indent -= 1;
+                    self.emit_indent();
+                    writeln!(self.output, "}} }}").unwrap();
+                } else {
+                    // Fallback for non-range iterables
+                    self.emit_indent();
+                    write!(self.output, "/* for {} in */ for (int _i = 0; _i < 10; _i++) {{", variable).unwrap();
+                    self.indent += 1;
+                    self.emit_indent();
+                    writeln!(self.output, "{} = _i;", variable).unwrap();
+                    for stmt in body {
+                        self.emit_statement(stmt)?;
+                    }
+                    self.indent -= 1;
+                    self.emit_indent();
+                    writeln!(self.output, "}}").unwrap();
                 }
-
-                self.indent -= 1;
-                self.emit_indent();
-                writeln!(self.output, "}}").unwrap();
             }
             Stmt::Guard { condition, else_body } => {
                 self.emit_indent();
@@ -590,6 +616,55 @@ impl CCodegen {
         Ok(())
     }
 
+    fn const_expr_to_c(
+        &self,
+        expr: &Expr,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Result<String, String> {
+        match expr {
+            Expr::IntegerLiteral(value) => Ok(value.to_string()),
+            Expr::HexLiteral(value) => Ok(format!("0x{:x}", value)),
+            Expr::FloatLiteral(value) => Ok(value.to_string()),
+            Expr::BoolLiteral(value) => Ok(if *value { "1" } else { "0" }.to_string()),
+            Expr::StringLiteral(value) => Ok(format!("\"{}\"", value)),
+            Expr::UnaryOp { op, expr } => {
+                let inner = self.const_expr_to_c(expr, visited)?;
+                match op {
+                    UnaryOp::Neg => Ok(format!("-({})", inner)),
+                    UnaryOp::Not => Ok(format!("!({})", inner)),
+                }
+            }
+            Expr::Cast { expr, target_type } => {
+                let inner = self.const_expr_to_c(expr, visited)?;
+                Ok(format!("({})({})", self.type_to_c(target_type), inner))
+            }
+            Expr::Identifier(name) => {
+                if visited.contains(name) {
+                    return Err(format!("cyclic const reference '{}'", name));
+                }
+                if !self.constants.contains_key(name) {
+                    return Err(format!("const reference '{}' is not defined", name));
+                }
+                visited.insert(name.clone());
+                let result = self.const_expr_to_c(&self.constants[name].1, visited)?;
+                visited.remove(name);
+                Ok(result)
+            }
+            Expr::BinaryOp { op, left, right } => {
+                if matches!(op, BinOp::Concat) {
+                    return Err("string concat (++) is not allowed in @const".to_string());
+                }
+                let l = self.const_expr_to_c(left, visited)?;
+                let r = self.const_expr_to_c(right, visited)?;
+                Ok(format!("({} {} {})", l, self.binop_to_c(op), r))
+            }
+            _ => Err(format!(
+                "expression {:?} is not allowed in @const (literals, arithmetic, casts only)",
+                expr
+            )),
+        }
+    }
+
     fn emit_expression(&mut self, expr: &Expr) -> Result<(), CodegenError> {
         match expr {
             Expr::IntegerLiteral(value) => {
@@ -615,7 +690,7 @@ impl CCodegen {
             Expr::BinaryOp { op, left, right } => {
                 if matches!(op, BinOp::Concat) {
                     // String concatenation - convert non-string types to strings
-                    write!(self.output, "concat_strings(").unwrap();
+                    write!(self.output, "glyph_concat_strings(").unwrap();
                     self.emit_to_string(left)?;
                     write!(self.output, ", ").unwrap();
                     self.emit_to_string(right)?;

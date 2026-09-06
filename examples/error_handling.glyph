@@ -1,23 +1,26 @@
 @module examples.error_handling
 
-@enum DatabaseError {
-    ConnectionFailed,
-    NotFound,
-    QueryTimeout,
+@enum DivisionResult {
+    Success(Float64),
+    DivisionByZero,
 }
 
-@fn divide(a: Float64, b: Float64) -> Result<Float64, DatabaseError> {
+@fn divide(a: Float64, b: Float64) -> DivisionResult {
     #guard(b != 0.0) else {
-        return Err(DatabaseError.NotFound);
+        return DivisionResult::DivisionByZero;
     };
 
-    return Ok(a / b);
+    return DivisionResult::Success(a / b);
+}
+
+@fn report(result: DivisionResult) -> Void {
+    match result {
+        | DivisionResult::Success(value) => print("Result: " ++ float_to_string(value))
+        | DivisionResult::DivisionByZero => print("Division by zero!")
+    }
 }
 
 @fn main() -> Void {
-    let result: Result<Float64, DatabaseError> = divide(10.0, 2.0);
-    match result {
-        | Ok(value) => print("Result: " ++ value)
-        | Err(err) => print("Error occurred")
-    }
+    report(divide(10.0, 2.0));
+    report(divide(10.0, 0.0));
 }

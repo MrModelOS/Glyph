@@ -15,5 +15,5 @@
     let p1: Point = Point { x: 0.0, y: 0.0 };
     let p2: Point = Point { x: 3.0, y: 4.0 };
     let dist: Float64 = distance(p1, p2);
-    print("Distance: " ++ dist);
+    print("Distance: " ++ float_to_string(dist));
 }
