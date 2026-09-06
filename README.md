@@ -15,6 +15,7 @@ Glyph транслируется в C-код (GNU statement expressions) и со
 
 - Статическая типизация: `Int64`, `UInt64`, `Float64`, `Bool`, `String`, `Bytes`
 - Пользовательские типы: структуры (`@struct`), перечисления (`@enum`) с данными в вариантах
+- Методы через `@impl`: `obj.method(args)`, ресивер — первый параметр
 - Контроль потока: `if/else`, `match` (в т.ч. с паттернами вариантов и данными), `while`, `loop`, `for .. in`
 - Контракты-клозы: `#guard(cond) else { ... };`
 - Модули: `@module`, `@use`, `@pub`, квалифицированные вызовы `math::sqrt`
@@ -96,6 +97,22 @@ let mut total: Float64 = 0.0;   // изменяемая
     let dx: Float64 = b.x - a.x;
     let dy: Float64 = b.y - a.y;
     return sqrt(dx * dx + dy * dy);
+}
+```
+
+Методы через `@impl` — ресивер передаётся первым параметром:
+
+```glyph
+@impl Point {
+    @fn norm(p: Point) -> Float64 {
+        return sqrt(p.x * p.x + p.y * p.y);
+    }
+}
+
+@fn main() -> Void {
+    let p: Point = Point { x: 3.0, y: 4.0 };
+    let n: Float64 = p.norm();   // → Point_norm(p)
+    print_float(n);
 }
 ```
 
@@ -253,12 +270,11 @@ glyphc/
 
 ## Ограничения
 
-- Методы `@impl` компилируются не полностью — используйте свободные функции
 - `Result`/`Option` с данными (`Result::Ok(x)`) пока нельзя ни построить, ни сопоставить;
   используйте собственные перечисления (см. `error_handling.glyph`)
 - Конкурентность (`spawn`, `await`, каналы) в поверхностном языке ещё нет
 - LSP-сервер — экспериментальный
-- Планы v1.1+: обобщения, полноценные `Result`/`Option`, исправление `@impl`-методов
+- Планы v1.1: полноценные `Result`/`Option`, операции со `List<T>`, обобщения
 
 ## Лицензия
 

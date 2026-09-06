@@ -26,6 +26,7 @@ pub struct CCodegen {
     functions: HashMap<String, FunctionSignature>,
     constants: HashMap<String, (Type, Expr)>,
     variable_types: HashMap<String, Type>,
+    struct_fields: HashMap<String, Vec<(String, Type)>>,
     test_runners: Option<Vec<String>>,
 }
 
@@ -38,6 +39,7 @@ impl CCodegen {
             functions: HashMap::new(),
             constants: HashMap::new(),
             variable_types: HashMap::new(),
+            struct_fields: HashMap::new(),
             test_runners: None,
         }
     }
@@ -212,6 +214,7 @@ impl CCodegen {
                     ..
                 } => {
                     for method in methods {
+                        let full_name = format!("{}_{}", type_name, method.name);
                         let sig = FunctionSignature {
                             params: method.params
                                 .iter()
@@ -220,7 +223,6 @@ impl CCodegen {
                             return_type: method.return_type.clone(),
                             is_async: method.is_async,
                         };
-                        let full_name = format!("{}.{}", type_name, method.name);
                         self.functions.insert(full_name, sig);
                     }
                 }
@@ -269,19 +271,36 @@ impl CCodegen {
 
         // Forward declarations
         for item in &program.items {
-            if let TopLevelItem::Function {
-                name,
-                params,
-                return_type,
-                ..
-            } = item
-            {
-                // In test mode the generated test runner provides `main`
-                if is_test && name == "main" {
-                    continue;
+            match item {
+                TopLevelItem::Function {
+                    name,
+                    params,
+                    return_type,
+                    ..
+                } => {
+                    // In test mode the generated test runner provides `main`
+                    if is_test && name == "main" {
+                        continue;
+                    }
+                    self.emit_function_declaration(name, params, return_type.as_ref())?;
+                    writeln!(self.output, ";").unwrap();
                 }
-                self.emit_function_declaration(name, params, return_type.as_ref())?;
-                writeln!(self.output, ";").unwrap();
+                TopLevelItem::Impl {
+                    type_name,
+                    methods,
+                    ..
+                } => {
+                    for method in methods {
+                        let full_name = format!("{}_{}", type_name, method.name);
+                        self.emit_function_declaration(
+                            &full_name,
+                            &method.params,
+                            method.return_type.as_ref(),
+                        )?;
+                        writeln!(self.output, ";").unwrap();
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -308,7 +327,7 @@ impl CCodegen {
                     ..
                 } => {
                     for method in methods {
-                        let full_name = format!("{}.{}", type_name, method.name);
+                        let full_name = format!("{}_{}", type_name, method.name);
                         self.emit_function_implementation(
                             &full_name,
                             &method.params,
@@ -423,6 +442,7 @@ impl CCodegen {
         name: &str,
         fields: &[(String, Type)],
     ) -> Result<(), CodegenError> {
+        self.struct_fields.insert(name.to_string(), fields.to_vec());
         writeln!(self.output, "typedef struct {{").unwrap();
         self.indent += 1;
 
@@ -449,6 +469,7 @@ impl CCodegen {
         writeln!(self.output, " {{").unwrap();
         self.indent += 1;
 
+        self.variable_types.clear();
         for param in params {
             self.variable_types.insert(param.name.clone(), param.ty.clone());
         }
@@ -780,15 +801,25 @@ impl CCodegen {
                         self.emit_expression(object)?;
                     }
                     _ => {
-                        self.emit_expression(object)?;
-                        write!(self.output, ".{}(", method).unwrap();
-                        for (i, arg) in args.iter().enumerate() {
-                            if i > 0 {
-                                write!(self.output, ", ").unwrap();
+                        match self.resolved_custom_type_name(object) {
+                            Some(type_name) => {
+                                // Method on a custom type: Type_method(receiver, args...)
+                                write!(self.output, "{}_{}(", type_name, method).unwrap();
+                                self.emit_expression(object)?;
+                                for arg in args {
+                                    write!(self.output, ", ").unwrap();
+                                    self.emit_expression(arg)?;
+                                }
+                                write!(self.output, ")").unwrap();
                             }
-                            self.emit_expression(arg)?;
+                            None => {
+                                eprintln!(
+                                    "Codegen error: cannot resolve type of method receiver for '{}'",
+                                    method
+                                );
+                                std::process::exit(1);
+                            }
                         }
-                        write!(self.output, ")").unwrap();
                     }
                 }
             }
@@ -1020,6 +1051,43 @@ impl CCodegen {
                 matches!(self.variable_types.get(name), Some(Type::Ref(_)))
             }
             _ => false,
+        }
+    }
+
+    /// Resolve the compile-time type of an expression (best-effort, for
+    /// method dispatch). Returns the custom type name when known.
+    fn resolved_custom_type_name(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(name) => match self.variable_types.get(name) {
+                Some(Type::Custom(name)) => Some(name.clone()),
+                Some(Type::Ref(inner)) => match &**inner {
+                    Type::Custom(name) => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            Expr::FieldAccess { object, field } => {
+                let obj_name = self.resolved_custom_type_name(object)?;
+                let fields = self.struct_fields.get(&obj_name)?;
+                fields
+                    .iter()
+                    .find(|(n, _)| n == field)
+                    .map(|(_, t)| match t {
+                        Type::Custom(name) => Some(name.clone()),
+                        Type::Ref(inner) => match &**inner {
+                            Type::Custom(name) => Some(name.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .unwrap_or(None)
+            }
+            Expr::Cast { target_type, .. } => match target_type {
+                Type::Custom(name) => Some(name.clone()),
+                _ => None,
+            },
+            Expr::Ref(inner) => self.resolved_custom_type_name(inner),
+            _ => None,
         }
     }
 

@@ -815,16 +815,39 @@ impl TypeChecker {
                         _ => Err(TypeError::UndefinedFunction(format!("Channel.{}", method))),
                     },
                     Type::Custom(type_name) => {
-                        // Check if method exists in impl blocks
+                        // Check if method exists in impl blocks.
+                        // Method signature is receiver-first: the first param
+                        // must match the object type, explicit args follow.
                         let full_name = format!("{}.{}", type_name, method);
                         if let Some(sig) = self.env.get_function(&full_name).cloned() {
-                            if args.len() != sig.params.len() {
+                            if sig.params.is_empty() {
+                                return Err(TypeError::UndefinedFunction(format!(
+                                    "{}.{}",
+                                    type_name, method
+                                )));
+                            }
+                            let receiver_ty = &sig.params[0].1;
+                            let object_check = match &object_type {
+                                Type::Ref(inner) => inner.as_ref(),
+                                other => other,
+                            };
+                            let receiver_check = match receiver_ty {
+                                Type::Ref(inner) => inner.as_ref(),
+                                other => other,
+                            };
+                            if !self.types_compatible(receiver_check, object_check) {
+                                return Err(TypeError::TypeMismatch {
+                                    expected: format!("{:?}", receiver_ty),
+                                    found: format!("{:?}", object_type),
+                                });
+                            }
+                            if args.len() != sig.params.len() - 1 {
                                 return Err(TypeError::WrongArgumentCount {
-                                    expected: sig.params.len(),
+                                    expected: sig.params.len() - 1,
                                     found: args.len(),
                                 });
                             }
-                            for (arg, (_, param_type, _)) in args.iter().zip(&sig.params) {
+                            for (arg, (_, param_type, _)) in args.iter().zip(&sig.params[1..]) {
                                 let arg_type = self.check_expression(arg)?;
                                 if !self.types_compatible(param_type, &arg_type) {
                                     return Err(TypeError::TypeMismatch {
@@ -1276,5 +1299,50 @@ mod tests {
 
         let mut checker = TypeChecker::new();
         assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_impl_method() {
+        let input = "\
+@struct Point { x: Float64, y: Float64 }
+@impl Point {
+    @fn norm(p: Point) -> Float64 { return sqrt(p.x * p.x + p.y * p.y); }
+    @fn scaled(p: Point, k: Float64) -> Point { return Point { x: p.x * k, y: p.y * k }; }
+}
+@fn main() -> Void {
+    let p: Point = Point { x: 3.0, y: 4.0 };
+    let n: Float64 = p.norm();
+    let q: Point = p.scaled(2.0);
+    print_float(q.y);
+    print_float(n);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_impl_method_bad_args() {
+        let input = "\
+@struct Point { x: Float64, y: Float64 }
+@impl Point {
+    @fn norm(p: Point) -> Float64 { return p.x; }
+}
+@fn main() -> Void {
+    let p: Point = Point { x: 3.0, y: 4.0 };
+    let n: Float64 = p.norm(1.0);
+    print_float(n);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
     }
 }

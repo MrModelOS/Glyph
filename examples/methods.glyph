@@ -1,0 +1,26 @@
+@struct Point {
+    x: Float64,
+    y: Float64,
+}
+
+@impl Point {
+    @fn norm(p: Point) -> Float64 {
+        return sqrt(p.x * p.x + p.y * p.y);
+    }
+
+    @fn scaled(p: Point, k: Float64) -> Point {
+        return Point { x: p.x * k, y: p.y * k };
+    }
+}
+
+@fn main() -> Void {
+    let p: Point = Point { x: 3.0, y: 4.0 };
+
+    let n: Float64 = p.norm();
+    print("norm(3,4) =");
+    print_float(n);
+
+    let q: Point = p.scaled(2.0);
+    print("scaled y =");
+    print_float(q.y);
+}

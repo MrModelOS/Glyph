@@ -213,7 +213,7 @@ let range: List<Int64> = 0..10;   // [0, 1, ..., 9]
 let arr: List<Int64> = [1, 2, 3];
 ```
 
-## 8. Структуры
+## 8. Структуры и методы
 
 ```glyph
 @struct Point {
@@ -225,8 +225,34 @@ let p: Point = Point { x: 0.0, y: 0.0 };
 let dx: Float64 = p2.x - p1.x;
 ```
 
-Методы (`@impl`) пока компилируются не полностью — используйте свободные
-функции, как в `examples/structs.glyph` и `examples/impl_const.glyph`.
+### Методы через `@impl`
+
+`@impl <Type> { @fn ... }` объявляет методы типа. Ресивер передаётся
+**первым параметром**, вызов `obj.method(a, b)` превращается в
+`Type_method(obj, a, b)`.
+
+```glyph
+@impl Point {
+    @fn norm(p: Point) -> Float64 {
+        return sqrt(p.x * p.x + p.y * p.y);
+    }
+    @fn scaled(p: Point, k: Float64) -> Point {
+        return Point { x: p.x * k, y: p.y * k };
+    }
+}
+
+let p: Point = Point { x: 3.0, y: 4.0 };
+let n: Float64 = p.norm();          // → Point_norm(p)
+let q: Point = p.scaled(2.0);       // → Point_scaled(p, 2.0)
+```
+
+Правила:
+- первый параметр метода должен иметь тип (или `&`-ссылку на тип) `Type` —
+  тот же, что и у объекта вызова;
+- остальные параметры — обычные аргументы; `args.len() == params.len() - 1`;
+- тело метода обращается к полям ресивера через параметр (`p.x`), без `self`;
+- методы других модулей не префиксуются (§10), имена методов —
+  `Type_method`; методы нельзя импортировать как функции.
 
 ## 9. Перечисления
 
