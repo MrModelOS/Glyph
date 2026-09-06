@@ -25,6 +25,9 @@ pub enum Type {
 
     // User-defined type
     Custom(String),
+
+    // Type parameter of a generic function
+    Generic(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -264,6 +267,7 @@ pub enum TopLevelItem {
     // Function declaration
     Function {
         name: String,
+        type_params: Vec<String>,
         params: Vec<FunctionParam>,
         return_type: Option<Type>,
         body: Vec<Stmt>,

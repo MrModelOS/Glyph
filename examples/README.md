@@ -32,6 +32,7 @@ glyphc run --input examples/hello.glyph
 | `math_test.glyph` | `std.math` без `@use` |
 | `stdlib_test.glyph` | `std.io`, `std.string` |
 | `error_handling.glyph` | `#guard` + перечисление-ошибка (`DivisionResult`) |
+| `generics.glyph` | обобщённые функции: `<T>`, `<T, K>`, `Option<T>`, `Result<T, E>`, цепочки |
 | `project/` | многофайловый проект: 6 модулей, импорт `@use`, вызовы `math::…` |
 | `tests/` | тестовый проект: `@test`-модуль `calc.glyph` + `main.glyph`, `glyphc test` |
 

@@ -1,5 +1,6 @@
 use crate::ast::*;
-use std::collections::HashMap;
+use crate::generics::{infer_with_expected, instance_c_name, substitute_params, substitute_stmt, substitute_type, GenericFnInfo};
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -57,6 +58,9 @@ pub enum TypeError {
 
     #[error("Test function '{name}' must return Void (found {found})")]
     TestFunctionReturn { name: String, found: String },
+
+    #[error("Cannot infer type arguments for generic function '{0}'")]
+    CannotInferTypeArgs(String),
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +137,8 @@ impl TypeEnv {
 
 pub struct TypeChecker {
     env: TypeEnv,
+    generic_fns: HashMap<String, GenericFnInfo>,
+    instantiated: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -246,7 +252,11 @@ impl TypeChecker {
         env.define_function("__builtin_assert_true".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
         env.define_function("__builtin_assert_false".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
 
-        TypeChecker { env }
+        TypeChecker {
+            env,
+            generic_fns: HashMap::new(),
+            instantiated: HashSet::new(),
+        }
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), TypeError> {
@@ -278,12 +288,26 @@ impl TypeChecker {
                 }
                 TopLevelItem::Function {
                     name,
+                    type_params,
                     params,
                     return_type,
+                    body,
                     is_async,
                     is_test,
                     ..
                 } => {
+                    if !type_params.is_empty() {
+                        self.generic_fns.insert(
+                            name.clone(),
+                            GenericFnInfo {
+                                type_params: type_params.clone(),
+                                params: params.clone(),
+                                return_type: return_type.clone(),
+                                body: body.clone(),
+                            },
+                        );
+                        continue;
+                    }
                     if *is_test {
                         if !params.is_empty() {
                             return Err(TypeError::TestFunctionParams {
@@ -356,11 +380,15 @@ impl TypeChecker {
     fn check_top_level_item(&mut self, item: &TopLevelItem) -> Result<(), TypeError> {
         match item {
             TopLevelItem::Function {
+                type_params,
                 params,
                 body,
                 return_type,
                 ..
             } => {
+                if !type_params.is_empty() {
+                    return Ok(());
+                }
                 // Create new scope for function
                 let mut func_env = self.env.clone();
 
@@ -370,8 +398,13 @@ impl TypeChecker {
                 }
 
                 // Check body
-                let mut checker = TypeChecker { env: func_env };
+                let mut checker = TypeChecker {
+                    env: func_env,
+                    generic_fns: self.generic_fns.clone(),
+                    instantiated: self.instantiated.clone(),
+                };
                 checker.check_block(body, return_type.as_ref())?;
+                self.instantiated = checker.instantiated;
 
                 Ok(())
             }
@@ -385,8 +418,13 @@ impl TypeChecker {
                     for param in &method.params {
                         func_env.define_variable(param.name.clone(), param.ty.clone());
                     }
-                    let mut checker = TypeChecker { env: func_env };
+                    let mut checker = TypeChecker {
+                        env: func_env,
+                        generic_fns: self.generic_fns.clone(),
+                        instantiated: self.instantiated.clone(),
+                    };
                     checker.check_block(&method.body, method.return_type.as_ref())?;
+                    self.instantiated = checker.instantiated;
                 }
                 Ok(())
             }
@@ -486,6 +524,75 @@ impl TypeChecker {
         Ok(None)
     }
 
+    fn check_block_swapped(
+        &mut self,
+        env: TypeEnv,
+        stmts: &[Stmt],
+        expected_return: Option<&Type>,
+    ) -> Result<Option<Type>, TypeError> {
+        let prev_env = std::mem::replace(&mut self.env, env);
+        let result = self.check_block(stmts, expected_return);
+        self.env = prev_env;
+        result
+    }
+
+    fn check_expr_swapped(&mut self, env: TypeEnv, expr: &Expr) -> Result<Type, TypeError> {
+        let prev_env = std::mem::replace(&mut self.env, env);
+        let result = self.check_expression(expr);
+        self.env = prev_env;
+        result
+    }
+
+    fn check_generic_call(
+        &mut self,
+        name: &str,
+        info: &GenericFnInfo,
+        args: &[Expr],
+        expected_ret: Option<&Type>,
+    ) -> Result<Type, TypeError> {
+        if args.len() != info.params.len() {
+            return Err(TypeError::WrongArgumentCount {
+                expected: info.params.len(),
+                found: args.len(),
+            });
+        }
+
+        let mut arg_types = Vec::with_capacity(args.len());
+        for arg in args {
+            arg_types.push(self.check_expression(arg)?);
+        }
+
+        let declared_types: Vec<Type> = info.params.iter().map(|p| p.ty.clone()).collect();
+        let subst = infer_with_expected(
+            &info.type_params,
+            &declared_types,
+            &arg_types,
+            info.return_type.as_ref(),
+            expected_ret,
+        )
+        .ok_or_else(|| TypeError::CannotInferTypeArgs(name.to_string()))?;
+        let key = instance_c_name(name, &info.type_params, &subst);
+
+        if !self.instantiated.contains(&key) {
+            self.instantiated.insert(key.clone());
+
+            let concrete_params = substitute_params(&subst, &info.params);
+            let mut func_env = self.env.clone();
+            for p in &concrete_params {
+                func_env.define_variable(p.name.clone(), p.ty.clone());
+            }
+            let body: Vec<Stmt> = info.body.iter().map(|s| substitute_stmt(&subst, s)).collect();
+            self.check_block_swapped(func_env, &body, info.return_type.as_ref())?;
+        }
+
+        let ret = info
+            .return_type
+            .as_ref()
+            .map(|t| substitute_type(&subst, t))
+            .unwrap_or(Type::Void);
+        Ok(ret)
+    }
+
     fn check_statement(&mut self, stmt: &Stmt) -> Result<Option<Type>, TypeError> {
         match stmt {
             Stmt::Let {
@@ -494,7 +601,23 @@ impl TypeChecker {
                 value,
                 mutable: _,
             } => {
-                let value_type = self.check_expression(value)?;
+                // A generic call with a declared type: infer remaining type
+                // parameters from the annotation (e.g. `E` in `-> Result<T, E>`).
+                let value_type = match (ty, value) {
+                    (Some(expected), Expr::FunctionCall { name: callee, args }) => {
+                        if let Expr::Identifier(n) = callee.as_ref() {
+                            let fname = n.replace("::", "_");
+                            if let Some(info) = self.generic_fns.get(&fname).cloned() {
+                                self.check_generic_call(&fname, &info, args, Some(expected))?
+                            } else {
+                                self.check_expression(value)?
+                            }
+                        } else {
+                            self.check_expression(value)?
+                        }
+                    }
+                    _ => self.check_expression(value)?,
+                };
 
                 let stored = if let Some(expected) = ty {
                     if !self.types_compatible(expected, &value_type) {
@@ -733,6 +856,11 @@ impl TypeChecker {
                 // Polymorphic assert builtins (work on Int64/UInt64/Float64/Bool/String)
                 if Self::is_polymorphic_assert(&func_name) {
                     return self.check_assert_builtin_call(&func_name, args);
+                }
+
+                // Generic function call: infer type arguments and check the instantiation
+                if let Some(info) = self.generic_fns.get(&func_name).cloned() {
+                    return self.check_generic_call(&func_name, &info, args, None);
                 }
 
                 let sig = self
@@ -994,15 +1122,13 @@ impl TypeChecker {
 
                     // Check guard if present
                     if let Some(guard) = &arm.guard {
-                        let mut checker = TypeChecker { env: arm_env.clone() };
-                        let guard_type = checker.check_expression(guard)?;
+                        let guard_type = self.check_expr_swapped(arm_env.clone(), guard)?;
                         if !matches!(guard_type, Type::Bool) {
                             return Err(TypeError::GuardConditionNotBool);
                         }
                     }
 
-                    let mut checker = TypeChecker { env: arm_env };
-                    let body_ty = checker.check_expression(&arm.body)?;
+                    let body_ty = self.check_expr_swapped(arm_env, &arm.body)?;
                     if result_ty.is_none() {
                         result_ty = Some(body_ty);
                     } else if let Some(prev) = &result_ty {
@@ -1047,19 +1173,27 @@ impl TypeChecker {
             }
 
             Expr::Block(stmts) => {
-                let block_env = self.env.clone();
-                let mut checker = TypeChecker { env: block_env };
-
+                // New scope for the whole block: clone the outer env, run all
+                // statements sequentially in it, then restore the outer env.
+                // Generic state lives on `self` and is preserved throughout.
+                let outer_env = self.env.clone();
+                self.env = outer_env.clone();
+                let mut outcome: Result<Type, TypeError> = Ok(Type::Void);
                 for (i, stmt) in stmts.iter().enumerate() {
-                    let is_last = i == stmts.len() - 1;
-                    let result = checker.check_statement(stmt)?;
-
-                    if is_last {
-                        return Ok(result.unwrap_or(Type::Void));
+                    match self.check_statement(stmt) {
+                        Ok(t) => {
+                            if i == stmts.len() - 1 {
+                                outcome = Ok(t.unwrap_or(Type::Void));
+                            }
+                        }
+                        Err(e) => {
+                            outcome = Err(e);
+                            break;
+                        }
                     }
                 }
-
-                Ok(Type::Void)
+                self.env = outer_env;
+                outcome
             }
 
             Expr::ChannelBounded { capacity } => {
@@ -1394,6 +1528,7 @@ impl TypeChecker {
             (Type::Ref(a), Type::Ref(b)) => self.types_compatible(a, b),
             (Type::Custom(a), Type::Custom(b)) => a == b,
             (Type::Array(a, s1), Type::Array(b, s2)) => self.types_compatible(a, b) && s1 == s2,
+            (Type::Generic(a), Type::Generic(b)) => a == b,
             _ => false,
         }
     }
@@ -1546,6 +1681,112 @@ mod tests {
         | None => 0
     };
     print_int(q);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_generic_identity() {
+        let input = "\
+@fn identity<T>(x: T) -> T {
+    return x;
+}
+@fn main() -> Void {
+    let a: Int64 = identity(5);
+    let b: Float64 = identity(2.5);
+    let c: String = identity(\"hi\");
+    print_int(a);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_generic_nested_and_chained() {
+        let input = "\
+@fn first<T, K>(a: T, b: K) -> T {
+    return a;
+}
+@fn wrap<T>(x: T) -> Option<T> {
+    return Option::Some(x);
+}
+@fn double_it<T>(x: T) -> T {
+    return first(x, x);
+}
+@fn main() -> Void {
+    let a: Int64 = double_it(21);
+    let m: Option<Int64> = wrap(a);
+    let s: String = first(\"hello\", 42);
+    print_int(a);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_generic_return_only_param_from_let() {
+        let input = "\
+@fn ok_wrap<T, E>(x: T) -> Result<T, E> {
+    return Result::Ok(x);
+}
+@fn main() -> Void {
+    let r: Result<String, Int64> = ok_wrap(\"fine\");
+    print(\"ok\");
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_generic_conflict() {
+        let input = "\
+@fn same<T>(a: T, b: T) -> T {
+    return a;
+}
+@fn main() -> Void {
+    let x: Int64 = same(1, \"two\");
+    print_int(x);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_generic_ambiguous() {
+        // `T` appears neither in parameters nor in any annotation: no way to infer.
+        let input = "\
+@fn make<T>() -> T {
+    return 0;
+}
+@fn main() -> Void {
+    let x = make();
+    print_int(x);
 }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize().unwrap();

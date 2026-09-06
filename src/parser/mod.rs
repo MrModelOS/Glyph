@@ -17,11 +17,23 @@ pub enum ParseError {
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    active_type_params: Vec<String>,
+}
+
+struct FunctionRest {
+    params: Vec<FunctionParam>,
+    return_type: Option<Type>,
+    body: Vec<Stmt>,
+    is_async: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Parser { tokens, pos: 0 }
+        Parser {
+            tokens,
+            pos: 0,
+            active_type_params: Vec::new(),
+        }
     }
 
     fn peek(&self) -> &Token {
@@ -167,6 +179,44 @@ impl Parser {
         };
 
         let name = self.expect_ident()?;
+
+        // Optional type parameters: <T, K>
+        let mut type_params = Vec::new();
+        if self.peek() == &Token::Lt {
+            self.advance();
+            loop {
+                type_params.push(self.expect_ident()?);
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            self.expect(&Token::Gt)?;
+        }
+
+        let outer_params = std::mem::replace(&mut self.active_type_params, type_params.clone());
+        let result = self.parse_function_rest(&name, is_async);
+        self.active_type_params = outer_params;
+        let rest = result?;
+
+        Ok(TopLevelItem::Function {
+            name,
+            type_params,
+            params: rest.params,
+            return_type: rest.return_type,
+            body: rest.body,
+            is_async: rest.is_async,
+            is_test,
+            pub_vis,
+        })
+    }
+
+    fn parse_function_rest(
+        &mut self,
+        _name: &str,
+        is_async: bool,
+    ) -> Result<FunctionRest, ParseError> {
         self.expect(&Token::LParen)?;
 
         let mut params = Vec::new();
@@ -214,14 +264,11 @@ impl Parser {
         let body = self.parse_block()?;
         self.expect(&Token::RBrace)?;
 
-        Ok(TopLevelItem::Function {
-            name,
+        Ok(FunctionRest {
             params,
             return_type,
             body,
             is_async,
-            is_test,
-            pub_vis,
         })
     }
 
@@ -543,8 +590,13 @@ impl Parser {
                 Ok(Type::Array(Box::new(inner), size))
             }
             Token::Identifier(name) => {
-                self.advance();
-                Ok(Type::Custom(name.clone()))
+                if self.active_type_params.iter().any(|p| p == name) {
+                    self.advance();
+                    Ok(Type::Generic(name.clone()))
+                } else {
+                    self.advance();
+                    Ok(Type::Custom(name.clone()))
+                }
             }
             _ => Err(ParseError::UnexpectedToken(
                 spanned.token.clone(),
@@ -1482,6 +1534,77 @@ mod tests {
                 } else {
                     panic!("Expected let statement");
                 }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_generic_function() {
+        let input = "@fn identity<T>(x: T) -> T { return x; }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        match &program.items[0] {
+            TopLevelItem::Function {
+                name,
+                type_params,
+                params,
+                return_type,
+                ..
+            } => {
+                assert_eq!(name, "identity");
+                assert_eq!(type_params, &vec!["T".to_string()]);
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].ty, Type::Generic("T".to_string()));
+                assert_eq!(return_type, &Some(Type::Generic("T".to_string())));
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_generic_nested_type() {
+        let input = "@fn wrap<T>(x: T) -> Option<T> { return Option::Some(x); }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        match &program.items[0] {
+            TopLevelItem::Function {
+                type_params,
+                return_type,
+                ..
+            } => {
+                assert_eq!(type_params, &vec!["T".to_string()]);
+                assert_eq!(
+                    return_type,
+                    &Some(Type::Option(Box::new(Type::Generic("T".to_string()))))
+                );
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_type_param_out_of_scope_is_custom() {
+        let input = "@fn f(x: T) -> T { return x; }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        match &program.items[0] {
+            TopLevelItem::Function {
+                type_params,
+                params,
+                ..
+            } => {
+                assert!(type_params.is_empty());
+                assert_eq!(params[0].ty, Type::Custom("T".to_string()));
             }
             _ => panic!("Expected function"),
         }

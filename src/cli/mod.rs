@@ -253,6 +253,7 @@ fn prefix_item(item: &TopLevelItem, prefix: &str) -> TopLevelItem {
     match item {
         TopLevelItem::Function {
             name,
+            type_params,
             params,
             return_type,
             body,
@@ -268,6 +269,7 @@ fn prefix_item(item: &TopLevelItem, prefix: &str) -> TopLevelItem {
             };
             TopLevelItem::Function {
                 name: new_name,
+                type_params: type_params.clone(),
                 params: params.clone(),
                 return_type: return_type.clone(),
                 body: body.clone(),

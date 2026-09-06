@@ -23,6 +23,8 @@ Glyph транслируется в C-код (GNU statement expressions) и со
 - Типизированные списки `List<T>`: литералы `[..]`, индексация `arr[i]`, диапазоны `0..10`
 - `Result`/`Option` с данными: `Result::Ok(x)`/`Option::Some(x)` — построение и
   сопоставление (`Ok(v)`/`Some(v)` в `match`) с payload, в т.ч. из `parse_int`/`parse_float`
+- Обобщённые функции: `@fn identity<T>(x: T) -> T` — мономорфизация, вывод типов
+  по аргументам и из аннотации `let`, вложенные типы (`Option<T>`, `List<T>`)
 - Встроенный тестовый фреймворк: `@test`, ассерты, `glyphc test`
 
 ## Установка
@@ -218,6 +220,34 @@ for i in 1..=5 { total = total + i; }           // 15
 }
 ```
 
+### Обобщённые функции
+
+Параметры типа объявляются после имени (`<T, K>`) и выводятся из аргументов
+вызова; параметры, встречающиеся только в возвращаемом типе, выводятся из
+аннотации `let`. Каждая инстанциация компилируется в отдельную C-функцию
+(`identity_i64`, `identity_str`, ...):
+
+```glyph
+@fn identity<T>(x: T) -> T {
+    return x;
+}
+
+@fn first<T, K>(a: T, b: K) -> T {
+    return a;
+}
+
+@fn ok_wrap<T, E>(x: T) -> Result<T, E> {
+    return Result::Ok(x);
+}
+
+@fn main() {
+    let a: Int64 = identity(5);              // identity_i64
+    let s: String = first("hello", 42);      // first_str_i64
+    let r: Result<String, Int64> = ok_wrap("fine");  // E из аннотации
+    print_int(a);
+}
+```
+
 ## Ассерты и тесты
 
 ```glyph
@@ -268,7 +298,7 @@ optimization = "-O2"
 
 ## Примеры
 
-Все примеры в `examples/` — 15 файлов + многофайловый проект `examples/project/` + тестовый
+Все примеры в `examples/` — 16 файлов + многофайловый проект `examples/project/` + тестовый
 проект `examples/tests/`. Проверить сразу всё:
 
 ```bash
@@ -285,6 +315,7 @@ examples/run_all.sh
 | `while.glyph`, `v1_features.glyph` | циклы, касты, диапазоны, литералы списков |
 | `math_test.glyph`, `stdlib_test.glyph` | std.math / std.io / std.string |
 | `error_handling.glyph` | `#guard` + enum-ошибка |
+| `generics.glyph` | обобщённые функции: инференс, `Option<T>`/`Result<T, E>`, цепочки вызовов |
 | `project/` | модульная программа: `@use math`, `@use geometry` |
 | `tests/` | тестовый проект: `@test`, ассерты, `glyphc test` |
 
@@ -299,13 +330,14 @@ glyphc/
 
 ## Ограничения
 
-- `Result`/`Option`: фиксированная коробка `void*` (payload копируется в кучу);
-  `Result::Ok` без контекста выводит неизвестный тип ошибки `E`
+- `Result`/`Option`: фиксированная коробка `void*` (payload копируется в кучу)
+- Обобщения: только функции (без generic-структур/enum/impl, без trait bounds);
+  вызов generic-функции внутри generic-тела требует конкретных типов
 - `List<T>` динамические операции (`append`, `len`, рост размера) в работе;
   сейчас доступны литералы и индексация фиксированных списков
 - Конкурентность (`spawn`, `await`, каналы) в поверхностном языке ещё нет
 - LSP-сервер — экспериментальный
-- Планы v1.1: динамические `List<T>`, обобщения
+- Планы v1.1: динамические `List<T>`, конкурентность
 
 ## Лицензия
 

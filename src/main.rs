@@ -3,6 +3,7 @@ mod ast;
 mod parser;
 mod typechecker;
 mod codegen;
+mod generics;
 mod modules;
 mod cli;
 mod lsp;

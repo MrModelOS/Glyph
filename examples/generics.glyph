@@ -1,0 +1,60 @@
+@fn identity<T>(x: T) -> T {
+    return x;
+}
+
+@fn first<T, K>(a: T, b: K) -> T {
+    return a;
+}
+
+@fn wrap<T>(x: T) -> Option<T> {
+    return Option::Some(x);
+}
+
+@fn unwrap_or<T>(o: Option<T>, fallback: T) -> T {
+    return match o {
+        | Some(v) => v,
+        | None => fallback,
+    };
+}
+
+@fn ok_wrap<T, E>(x: T) -> Result<T, E> {
+    return Result::Ok(x);
+}
+
+@fn pick<T>(flag: Bool, a: T, b: T) -> T {
+    let r: T = match flag {
+        | true => a,
+        | false => b,
+    };
+    return r;
+}
+
+@fn main() -> Int64 {
+    let a: Int64 = identity(5);
+    print_int(a);
+
+    let b: Float64 = identity(2.5);
+    print_float(b);
+
+    let s: String = first("hello", 42);
+    println(s);
+
+    let m: Option<Int64> = wrap(a);
+    let v: Int64 = unwrap_or(m, 0);
+    print_int(v);
+
+    let r: Result<String, Int64> = ok_wrap("fine");
+    let msg: String = match r {
+        | Ok(v) => v,
+        | Err(e) => "bad",
+    };
+    println(msg);
+
+    let x: Int64 = pick(true, 10, 20);
+    print_int(x);
+
+    let y: String = pick(false, "aa", "bb");
+    println(y);
+
+    return 0;
+}

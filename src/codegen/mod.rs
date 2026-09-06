@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::generics::{infer_substitution, infer_with_expected, instance_c_name, substitute_params, substitute_type, GenericFnInfo};
 use crate::typechecker::{FunctionSignature, TypeDefinition, EnumVariantInfo};
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -28,6 +29,9 @@ pub struct CCodegen {
     variable_types: HashMap<String, Type>,
     struct_fields: HashMap<String, Vec<(String, Type)>>,
     test_runners: Option<Vec<String>>,
+    generic_fns: HashMap<String, GenericFnInfo>,
+    generic_instances: HashMap<String, (String, HashMap<String, Type>)>,
+    active_substitution: HashMap<String, Type>,
 }
 
 impl CCodegen {
@@ -41,6 +45,9 @@ impl CCodegen {
             variable_types: HashMap::new(),
             struct_fields: HashMap::new(),
             test_runners: None,
+            generic_fns: HashMap::new(),
+            generic_instances: HashMap::new(),
+            active_substitution: HashMap::new(),
         }
     }
 
@@ -193,11 +200,25 @@ impl CCodegen {
                 }
                 TopLevelItem::Function {
                     name,
+                    type_params,
                     params,
                     return_type,
+                    body,
                     is_async,
                     ..
                 } => {
+                    if !type_params.is_empty() {
+                        self.generic_fns.insert(
+                            name.clone(),
+                            GenericFnInfo {
+                                type_params: type_params.clone(),
+                                params: params.clone(),
+                                return_type: return_type.clone(),
+                                body: body.clone(),
+                            },
+                        );
+                        continue;
+                    }
                     let sig = FunctionSignature {
                         params: params
                             .iter()
@@ -241,6 +262,35 @@ impl CCodegen {
             }
         }
 
+        // Register return types of builtin functions so generic type inference
+        // works through calls such as `to_int(s)` or `int_to_string(n)`.
+        self.register_builtin_signatures();
+
+        // Discover which generic instantiations are reachable from non-generic
+        // function bodies (including @test bodies), then their bodies, etc.
+        for item in &program.items {
+            if let TopLevelItem::Function {
+                name,
+                type_params,
+                params,
+                body,
+                ..
+            } = item
+            {
+                if !type_params.is_empty() {
+                    continue;
+                }
+                let mut var_types: HashMap<String, Type> = HashMap::new();
+                for p in params {
+                    var_types.insert(p.name.clone(), p.ty.clone());
+                }
+                if let Err(e) = self.scan_body_for_generic_calls(name, body, &mut var_types, &HashMap::new()) {
+                    eprintln!("Codegen error while scanning '{}': {}", name, e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
         // Enum definitions (tagged unions)
         for item in &program.items {
             if let TopLevelItem::Enum { name, variants, .. } = item {
@@ -274,12 +324,16 @@ impl CCodegen {
             match item {
                 TopLevelItem::Function {
                     name,
+                    type_params,
                     params,
                     return_type,
                     ..
                 } => {
                     // In test mode the generated test runner provides `main`
                     if is_test && name == "main" {
+                        continue;
+                    }
+                    if !type_params.is_empty() {
                         continue;
                     }
                     self.emit_function_declaration(name, params, return_type.as_ref())?;
@@ -306,17 +360,40 @@ impl CCodegen {
 
         writeln!(self.output, "").unwrap();
 
+        // Generic instance forward declarations
+        let generic_instance_decls: Vec<(String, GenericFnInfo, HashMap<String, Type>)> = self
+            .generic_instances
+            .iter()
+            .filter_map(|(cname, (base_fn, subst))| {
+                self.generic_fns
+                    .get(base_fn)
+                    .map(|info| (cname.clone(), info.clone(), subst.clone()))
+            })
+            .collect();
+        for (cname, info, subst) in &generic_instance_decls {
+            let prev = std::mem::replace(&mut self.active_substitution, subst.clone());
+            let concrete_params = substitute_params(subst, &info.params);
+            let r = self.emit_function_declaration(cname, &concrete_params, info.return_type.as_ref());
+            self.active_substitution = prev;
+            r?;
+            writeln!(self.output, ";").unwrap();
+        }
+
         // Function implementations
         for item in &program.items {
             match item {
                 TopLevelItem::Function {
                     name,
+                    type_params,
                     params,
                     body,
                     return_type,
                     ..
                 } => {
                     if is_test && name == "main" {
+                        continue;
+                    }
+                    if !type_params.is_empty() {
                         continue;
                     }
                     self.emit_function_implementation(name, params, body, return_type.as_ref())?;
@@ -338,6 +415,20 @@ impl CCodegen {
                 }
                 _ => {}
             }
+        }
+
+        // Generic instance implementations (monomorphized)
+        for (cname, info, subst) in &generic_instance_decls {
+            let prev = std::mem::replace(&mut self.active_substitution, subst.clone());
+            let concrete_params = substitute_params(subst, &info.params);
+            let r = self.emit_function_implementation(
+                cname,
+                &concrete_params,
+                &info.body,
+                info.return_type.as_ref(),
+            );
+            self.active_substitution = prev;
+            r?;
         }
 
         // Add built-in function implementations
@@ -418,7 +509,7 @@ impl CCodegen {
             "int".to_string()
         } else {
             match return_type {
-                Some(ty) => self.type_to_c(ty),
+                Some(ty) => self.type_to_c(&self.subst_active(ty)),
                 None => "void".to_string(),
             }
         };
@@ -429,7 +520,13 @@ impl CCodegen {
             if i > 0 {
                 write!(self.output, ", ").unwrap();
             }
-            write!(self.output, "{} {}", self.type_to_c(&param.ty), param.name).unwrap();
+            write!(
+                self.output,
+                "{} {}",
+                self.type_to_c(&self.subst_active(&param.ty)),
+                param.name
+            )
+            .unwrap();
         }
 
         write!(self.output, ")").unwrap();
@@ -471,7 +568,7 @@ impl CCodegen {
 
         self.variable_types.clear();
         for param in params {
-            self.variable_types.insert(param.name.clone(), param.ty.clone());
+            self.variable_types.insert(param.name.clone(), self.subst_active(&param.ty));
         }
 
         for (i, stmt) in body.iter().enumerate() {
@@ -505,12 +602,14 @@ impl CCodegen {
                 value,
                 mutable: _,
             } => {
+                // Substitute generic type parameters for the current instance
+                let concrete_ty = ty.as_ref().map(|t| self.subst_active(t));
                 // Track variable type for match codegen reference detection
-                if let Some(t) = ty {
+                if let Some(t) = &concrete_ty {
                     self.variable_types.insert(name.clone(), t.clone());
                 }
                 self.emit_indent();
-                let ty_str = match ty {
+                let ty_str = match &concrete_ty {
                     Some(Type::List(elem)) => {
                         format!("{}*", self.type_to_c(elem))
                     }
@@ -518,7 +617,7 @@ impl CCodegen {
                     None => "auto".to_string(),
                 };
                 write!(self.output, "{} {} = ", ty_str, name).unwrap();
-                match (ty, value) {
+                match (&concrete_ty, value) {
                     (Some(Type::List(elem)), Expr::ArrayLiteral(elements)) => {
                         // Typed list literal: (T[]){ ... } with T = element type
                         write!(self.output, "({}[]){{", self.type_to_c(elem)).unwrap();
@@ -529,6 +628,30 @@ impl CCodegen {
                             self.emit_expression(e)?;
                         }
                         write!(self.output, "}}").unwrap();
+                    }
+                    (Some(declared), Expr::FunctionCall { name, args }) => {
+                        // Resolve with the declared type as expected return so
+                        // return-only type parameters get inferred.
+                        let callee = match name.as_ref() {
+                            Expr::Identifier(n) => Some(n.clone()),
+                            _ => None,
+                        };
+                        match callee
+                            .as_deref()
+                            .and_then(|n| self.resolve_call_with_expected(n, args, Some(declared)))
+                        {
+                            Some(cname) => {
+                                write!(self.output, "{}(", cname).unwrap();
+                                for (i, arg) in args.iter().enumerate() {
+                                    if i > 0 {
+                                        write!(self.output, ", ").unwrap();
+                                    }
+                                    self.emit_expression(arg)?;
+                                }
+                                write!(self.output, ")").unwrap();
+                            }
+                            None => self.emit_expression(value)?,
+                        }
                     }
                     _ => self.emit_expression(value)?,
                 }
@@ -754,19 +877,19 @@ impl CCodegen {
             }
             Expr::Cast { expr, target_type } => {
                 // C-style cast
-                write!(self.output, "({})", self.type_to_c(target_type)).unwrap();
+                write!(self.output, "({})", self.type_to_c(&self.subst_active(target_type))).unwrap();
                 write!(self.output, "(").unwrap();
                 self.emit_expression(expr)?;
                 write!(self.output, ")").unwrap();
             }
             Expr::FunctionCall { name, args } => {
                 // Map Glyph built-in function names to C names
-                let c_name = if let Expr::Identifier(n) = name.as_ref() {
-                    Self::map_builtin_name_static(n)
+                let resolved_name = if let Expr::Identifier(n) = name.as_ref() {
+                    self.resolve_call_cname(n, args)
                 } else {
                     None
                 };
-                if let Some(cname) = c_name {
+                if let Some(cname) = resolved_name {
                     write!(self.output, "{}", cname).unwrap();
                 } else {
                     self.emit_expression(name)?;
@@ -896,7 +1019,7 @@ impl CCodegen {
             Expr::Match { expr, arms } => {
                 // Boxed phantom-enum match: Option<T> / Result<T, E>
                 // Resolve and clone first to release the borrow on self.
-                let phantom = self.resolved_expr_type(expr).and_then(|t| match t {
+                let phantom = self.resolved_expr_type(expr).map(|t| self.subst_active(&t)).and_then(|t| match t {
                     Type::Option(inner) => Some((*inner, None)),
                     Type::Result(ok, err) => Some((*ok, Some(*err))),
                     _ => None,
@@ -1127,6 +1250,420 @@ impl CCodegen {
         Ok(())
     }
 
+    /// Apply the current generic substitution to a type (identity when empty).
+    fn subst_active(&self, ty: &Type) -> Type {
+        substitute_type(&self.active_substitution, ty)
+    }
+
+    /// Register return types of builtin functions so that generic type inference
+    /// resolves calls like `to_int(s)` or `int_to_string(n)` to concrete types.
+    fn register_builtin_signatures(&mut self) {
+        fn sig(params: Vec<Type>, ret: Option<Type>) -> FunctionSignature {
+            FunctionSignature {
+                params: params
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, t)| (format!("a{}", i), t, false))
+                    .collect(),
+                return_type: ret,
+                is_async: false,
+            }
+        }
+        let string = Type::String;
+        let i64 = Type::Int64;
+        let f64 = Type::Float64;
+        let bool = Type::Bool;
+        self.functions.insert("parse_int".into(), sig(vec![string.clone()], Some(Type::Option(Box::new(i64.clone())))));
+        self.functions.insert("parse_float".into(), sig(vec![string.clone()], Some(Type::Option(Box::new(f64.clone())))));
+        self.functions.insert("to_int".into(), sig(vec![string.clone()], Some(Type::Option(Box::new(i64.clone())))));
+        self.functions.insert("to_float".into(), sig(vec![string.clone()], Some(Type::Option(Box::new(f64.clone())))));
+        self.functions.insert("to_bool".into(), sig(vec![string.clone()], Some(Type::Option(Box::new(bool.clone())))));
+        self.functions.insert("int_to_string".into(), sig(vec![i64.clone()], Some(string.clone())));
+        self.functions.insert("float_to_string".into(), sig(vec![f64.clone()], Some(string.clone())));
+        self.functions.insert("bool_to_string".into(), sig(vec![bool.clone()], Some(string.clone())));
+        self.functions.insert("len".into(), sig(vec![string.clone()], Some(i64.clone())));
+        self.functions.insert("substring".into(), sig(vec![string.clone(), i64.clone(), i64.clone()], Some(string.clone())));
+        self.functions.insert("char_at".into(), sig(vec![string.clone(), i64.clone()], Some(string.clone())));
+        self.functions.insert("abs".into(), sig(vec![f64.clone()], Some(f64.clone())));
+        self.functions.insert("sqrt".into(), sig(vec![f64.clone()], Some(f64.clone())));
+        self.functions.insert("floor".into(), sig(vec![f64.clone()], Some(i64.clone())));
+        self.functions.insert("ceil".into(), sig(vec![f64.clone()], Some(i64.clone())));
+        self.functions.insert("round".into(), sig(vec![f64.clone()], Some(i64.clone())));
+    }
+
+    /// Resolve the C name of a function call target: builtin, plain function,
+    /// or a monomorphized generic instance.
+    fn resolve_call_cname(&mut self, n: &str, args: &[Expr]) -> Option<String> {
+        self.resolve_call_with_expected(n, args, None)
+    }
+
+    fn resolve_call_with_expected(
+        &mut self,
+        n: &str,
+        args: &[Expr],
+        expected_ret: Option<&Type>,
+    ) -> Option<String> {
+        if let Some(cname) = Self::map_builtin_name_static(n) {
+            return Some(cname.to_string());
+        }
+        if self.functions.contains_key(n) {
+            return Some(n.to_string());
+        }
+        if !self.generic_fns.contains_key(n) {
+            return None;
+        }
+        let info = self.generic_fns.get(n).cloned()?;
+        let mut arg_types = Vec::with_capacity(args.len());
+        for a in args {
+            arg_types.push(self.concrete_type_of(a, &self.variable_types)?);
+        }
+        let declared: Vec<Type> = info.params.iter().map(|p| p.ty.clone()).collect();
+        let subst = infer_with_expected(
+            &info.type_params,
+            &declared,
+            &arg_types,
+            info.return_type.as_ref(),
+            expected_ret,
+        )?;
+        let cname = instance_c_name(n, &info.type_params, &subst);
+        self.generic_instances
+            .entry(cname.clone())
+            .or_insert_with(|| (n.to_string(), subst));
+        Some(cname)
+    }
+
+    /// const-expr emission hook for scan helpers
+    fn scan_body_for_generic_calls(
+        &mut self,
+        _fn_name: &str,
+        body: &[Stmt],
+        var_types: &mut HashMap<String, Type>,
+        active_subst: &HashMap<String, Type>,
+    ) -> Result<(), String> {
+        self.scan_stmts(body, var_types, active_subst)
+    }
+
+    fn scan_stmts(
+        &mut self,
+        stmts: &[Stmt],
+        var_types: &mut HashMap<String, Type>,
+        active_subst: &HashMap<String, Type>,
+    ) -> Result<(), String> {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Let {
+                    name,
+                    ty,
+                    value,
+                    ..
+                } => {
+                    self.scan_expr(value, var_types, active_subst)?;
+                    let concrete = match ty {
+                        Some(t) => substitute_type(active_subst, t),
+                        None => self
+                            .concrete_type_of(value, var_types)
+                            .ok_or_else(|| "cannot infer type of untyped let".to_string())?,
+                    };
+                    var_types.insert(name.clone(), concrete);
+                    // Re-resolve a direct generic call with the declared type as
+                    // expected return, so return-only parameters get inferred.
+                    if let (Some(declared), Expr::FunctionCall { name: callee, args }) = (ty, value) {
+                        if let Expr::Identifier(n) = callee.as_ref() {
+                            if self.generic_fns.contains_key(n) {
+                                let ret_ctx = substitute_type(active_subst, declared);
+                                self.register_generic_call(n, args, var_types, &Some(ret_ctx))?;
+                            }
+                        }
+                    }
+                }
+                Stmt::Assignment { target, value } => {
+                    self.scan_expr(target, var_types, active_subst)?;
+                    self.scan_expr(value, var_types, active_subst)?;
+                }
+                Stmt::Expression(e) => self.scan_expr(e, var_types, active_subst)?,
+                Stmt::Return(Some(e)) => self.scan_expr(e, var_types, active_subst)?,
+                Stmt::Return(None) => {}
+                Stmt::Break | Stmt::Continue => {}
+                Stmt::Loop(b) => self.scan_stmts(b, var_types, active_subst)?,
+                Stmt::While { condition, body } => {
+                    self.scan_expr(condition, var_types, active_subst)?;
+                    self.scan_stmts(body, var_types, active_subst)?;
+                }
+                Stmt::For {
+                    variable,
+                    iterable,
+                    body,
+                } => {
+                    self.scan_expr(iterable, var_types, active_subst)?;
+                    let iter_ty = self.concrete_type_of(iterable, var_types);
+                    if let Some(Type::List(inner)) = iter_ty {
+                        var_types.insert(variable.clone(), *inner);
+                    }
+                    self.scan_stmts(body, var_types, active_subst)?;
+                }
+                Stmt::Guard {
+                    condition,
+                    else_body,
+                } => {
+                    self.scan_expr(condition, var_types, active_subst)?;
+                    self.scan_stmts(else_body, var_types, active_subst)?;
+                }
+                Stmt::Spawn(e) => self.scan_expr(e, var_types, active_subst)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn scan_expr(
+        &mut self,
+        expr: &Expr,
+        var_types: &mut HashMap<String, Type>,
+        active_subst: &HashMap<String, Type>,
+    ) -> Result<(), String> {
+        match expr {
+            Expr::IntegerLiteral(_)
+            | Expr::FloatLiteral(_)
+            | Expr::StringLiteral(_)
+            | Expr::BoolLiteral(_)
+            | Expr::HexLiteral(_) => {}
+            Expr::Identifier(_) => {}
+            Expr::BinaryOp { left, right, .. } => {
+                self.scan_expr(left, var_types, active_subst)?;
+                self.scan_expr(right, var_types, active_subst)?;
+            }
+            Expr::UnaryOp { expr: e, .. } => self.scan_expr(e, var_types, active_subst)?,
+            Expr::Ref(e) => self.scan_expr(e, var_types, active_subst)?,
+            Expr::Cast { expr: e, target_type } => {
+                self.scan_expr(e, var_types, active_subst)?;
+                let _ = substitute_type(active_subst, target_type);
+            }
+            Expr::FunctionCall { name, args } => {
+                for a in args {
+                    self.scan_expr(a, var_types, active_subst)?;
+                }
+                if let Expr::Identifier(n) = name.as_ref() {
+                    // Defer inference failures: a direct `let` with a declared
+                    // type re-resolves the call with return-type context below.
+                    // (The typechecker runs before codegen and rejects truly
+                    // uninferrable calls, so anything left here is contextual.)
+                    let _ = self.register_generic_call(n, args, var_types, &None);
+                }
+            }
+            Expr::MethodCall { object, args, .. } => {
+                self.scan_expr(object, var_types, active_subst)?;
+                for a in args {
+                    self.scan_expr(a, var_types, active_subst)?;
+                }
+            }
+            Expr::FieldAccess { object, .. } => self.scan_expr(object, var_types, active_subst)?,
+            Expr::IndexAccess { object, index } => {
+                self.scan_expr(object, var_types, active_subst)?;
+                self.scan_expr(index, var_types, active_subst)?;
+            }
+            Expr::StructInit { fields, .. } => {
+                for (_, v) in fields {
+                    self.scan_expr(v, var_types, active_subst)?;
+                }
+            }
+            Expr::EnumInit { args, .. } => {
+                for a in args {
+                    self.scan_expr(a, var_types, active_subst)?;
+                }
+            }
+            Expr::Match { expr: e, arms } => {
+                self.scan_expr(e, var_types, active_subst)?;
+                for arm in arms {
+                    if let Some(g) = &arm.guard {
+                        self.scan_expr(g, var_types, active_subst)?;
+                    }
+                    self.scan_expr(&arm.body, var_types, active_subst)?;
+                }
+            }
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.scan_expr(condition, var_types, active_subst)?;
+                self.scan_expr(then_branch, var_types, active_subst)?;
+                if let Some(e) = else_branch {
+                    self.scan_expr(e, var_types, active_subst)?;
+                }
+            }
+            Expr::Block(stmts) => self.scan_stmts(stmts, var_types, active_subst)?,
+            Expr::Range { start, end, .. } => {
+                self.scan_expr(start, var_types, active_subst)?;
+                self.scan_expr(end, var_types, active_subst)?;
+            }
+            Expr::ArrayLiteral(elems) => {
+                for e in elems {
+                    self.scan_expr(e, var_types, active_subst)?;
+                }
+            }
+            Expr::ChannelBounded { capacity } => self.scan_expr(capacity, var_types, active_subst)?,
+            Expr::Await(e) => self.scan_expr(e, var_types, active_subst)?,
+        }
+        Ok(())
+    }
+
+    fn register_generic_call(
+        &mut self,
+        n: &str,
+        args: &[Expr],
+        var_types: &mut HashMap<String, Type>,
+        expected_ret: &Option<Type>,
+    ) -> Result<(), String> {
+        if !self.generic_fns.contains_key(n) {
+            return Ok(());
+        }
+        let info = self.generic_fns.get(n).cloned().unwrap();
+        let mut arg_types = Vec::with_capacity(args.len());
+        for a in args {
+            let t = self
+                .concrete_type_of(a, var_types)
+                .ok_or_else(|| format!("cannot infer type of argument in call to '{}'", n))?;
+            arg_types.push(t);
+        }
+        let declared: Vec<Type> = info.params.iter().map(|p| p.ty.clone()).collect();
+        let subst = infer_with_expected(
+            &info.type_params,
+            &declared,
+            &arg_types,
+            info.return_type.as_ref(),
+            expected_ret.as_ref(),
+        )
+        .ok_or_else(|| format!("cannot infer type arguments for '{}'", n))?;
+        let cname = instance_c_name(n, &info.type_params, &subst);
+        if !self.generic_instances.contains_key(&cname) {
+            self.generic_instances.insert(cname.clone(), (n.to_string(), subst.clone()));
+            self.scan_generic_body(&info, &subst)?;
+        }
+        Ok(())
+    }
+
+    fn scan_generic_body(
+        &mut self,
+        info: &GenericFnInfo,
+        subst: &HashMap<String, Type>,
+    ) -> Result<(), String> {
+        let mut instance_types: HashMap<String, Type> = HashMap::new();
+        for p in &info.params {
+            instance_types.insert(p.name.clone(), substitute_type(subst, &p.ty));
+        }
+        self.scan_stmts(&info.body, &mut instance_types, subst)
+    }
+
+    /// Best-effort concrete type of an expression, used by generic inference at
+    /// call sites. Returns `None` when the type is not statically known.
+    fn concrete_type_of(&self, expr: &Expr, var_types: &HashMap<String, Type>) -> Option<Type> {
+        match expr {
+            Expr::IntegerLiteral(_) => Some(Type::Int64),
+            Expr::FloatLiteral(_) => Some(Type::Float64),
+            Expr::StringLiteral(_) => Some(Type::String),
+            Expr::BoolLiteral(_) => Some(Type::Bool),
+            Expr::HexLiteral(_) => Some(Type::Int64),
+            Expr::Identifier(name) => var_types.get(name).cloned().map(|t| match t {
+                Type::Ref(inner) => *inner,
+                _ => t,
+            }),
+            Expr::Ref(inner) => self.concrete_type_of(inner, var_types),
+            Expr::Cast { target_type, .. } => Some(substitute_type(
+                &self.active_substitution,
+                target_type,
+            )),
+            Expr::ArrayLiteral(elems) => {
+                let elem = elems.first().and_then(|e| self.concrete_type_of(e, var_types));
+                Some(Type::List(Box::new(elem.unwrap_or(Type::Void))))
+            }
+            Expr::StructInit { name, .. } => Some(Type::Custom(name.clone())),
+            Expr::EnumInit {
+                enum_name,
+                variant,
+                args,
+            } => {
+                let payload = args
+                    .first()
+                    .and_then(|a| self.concrete_type_of(a, var_types));
+                match (enum_name.as_str(), variant.as_str(), payload) {
+                    ("Option", "Some", Some(t)) => Some(Type::Option(Box::new(t))),
+                    ("Option", "None", _) => Some(Type::Option(Box::new(Type::Void))),
+                    ("Result", "Ok", Some(t)) => {
+                        Some(Type::Result(Box::new(t), Box::new(Type::Void)))
+                    }
+                    ("Result", "Err", Some(t)) => {
+                        Some(Type::Result(Box::new(Type::Void), Box::new(t)))
+                    }
+                    _ => None,
+                }
+            }
+            Expr::FunctionCall { name, args } => {
+                let callee = match &**name {
+                    Expr::Identifier(n) => n,
+                    _ => return None,
+                };
+                if let Some(sig) = self.functions.get(callee) {
+                    return sig.return_type.clone();
+                }
+                if self.generic_fns.contains_key(callee) {
+                    let info = self.generic_fns.get(callee).unwrap();
+                    let mut arg_types = Vec::with_capacity(args.len());
+                    for a in args {
+                        arg_types.push(self.concrete_type_of(a, var_types)?);
+                    }
+                    let declared: Vec<Type> = info.params.iter().map(|p| p.ty.clone()).collect();
+                    let subst = infer_substitution(&info.type_params, &declared, &arg_types)?;
+                    return info
+                        .return_type
+                        .as_ref()
+                        .map(|t| substitute_type(&subst, t));
+                }
+                None
+            }
+            Expr::FieldAccess { object, field } => {
+                let ty = self.concrete_type_of(object, var_types)?;
+                if let Type::Custom(obj_name) = ty {
+                    let fields = self.struct_fields.get(&obj_name)?;
+                    fields
+                        .iter()
+                        .find(|(n, _)| n == field)
+                        .map(|(_, t)| match t {
+                            Type::Ref(inner) => (**inner).clone(),
+                            _ => t.clone(),
+                        })
+                } else {
+                    None
+                }
+            }
+            Expr::UnaryOp { op, expr: e } => match op {
+                UnaryOp::Not => Some(Type::Bool),
+                UnaryOp::Neg => {
+                    let t = self.concrete_type_of(e, var_types)?;
+                    match t {
+                        Type::Float64 => Some(Type::Float64),
+                        Type::Int64 | Type::UInt64 => Some(Type::Int64),
+                        _ => None,
+                    }
+                }
+            },
+            Expr::BinaryOp { left, right, op } => {
+                let lt = self.concrete_type_of(left, var_types)?;
+                let rt = self.concrete_type_of(right, var_types)?;
+                match op {
+                    BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+                    | BinOp::And | BinOp::Or => Some(Type::Bool),
+                    _ => {
+                        if matches!(lt, Type::Float64) || matches!(rt, Type::Float64) {
+                            Some(Type::Float64)
+                        } else {
+                            Some(Type::Int64)
+                        }
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn type_to_c(&self, ty: &Type) -> String {
         match ty {
             Type::String => "char*".to_string(),
@@ -1145,6 +1682,7 @@ impl CCodegen {
             Type::Array(inner, size) => format!("{}[{}]", self.type_to_c(inner), size),
             Type::Ref(inner) => format!("{}*", self.type_to_c(inner)),
             Type::Custom(name) => name.clone(),
+            Type::Generic(_) => "__generic__".to_string(),
         }
     }
 
