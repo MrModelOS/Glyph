@@ -1,0 +1,18 @@
+@struct P { x: Float64, y: Float64 }
+
+@fn main() -> Void {
+    let arr: List<Int64> = [10, 20, 30];
+    print("arr[1] =");
+    print_int(arr[1]);
+
+    let mut total: Int64 = 0;
+    for i in 0..3 {
+        total = total + arr[i];
+    }
+    print("sum =");
+    print_int(total);
+
+    let points: List<P> = [P { x: 1.0, y: 2.0 }, P { x: 3.0, y: 4.0 }];
+    print("points[1].y =");
+    print_float(points[1].y);
+}

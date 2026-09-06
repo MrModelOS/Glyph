@@ -1326,8 +1326,28 @@ mod tests {
     }
 
     #[test]
-    fn test_type_check_impl_method_bad_args() {
+    fn test_type_check_list_index() {
         let input = "\
+@struct P { x: Float64, y: Float64 }
+@fn main() -> Void {
+    let arr: List<Int64> = [1, 2, 3];
+    let n: Int64 = arr[0];
+    let points: List<P> = [P { x: 1.0, y: 2.0 }];
+    let py: Float64 = points[0].y;
+    print_float(py);
+    print_int(n);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_impl_method_bad_args() {        let input = "\
 @struct Point { x: Float64, y: Float64 }
 @impl Point {
     @fn norm(p: Point) -> Float64 { return p.x; }

@@ -511,11 +511,27 @@ impl CCodegen {
                 }
                 self.emit_indent();
                 let ty_str = match ty {
+                    Some(Type::List(elem)) => {
+                        format!("{}*", self.type_to_c(elem))
+                    }
                     Some(t) => self.type_to_c(t),
                     None => "auto".to_string(),
                 };
                 write!(self.output, "{} {} = ", ty_str, name).unwrap();
-                self.emit_expression(value)?;
+                match (ty, value) {
+                    (Some(Type::List(elem)), Expr::ArrayLiteral(elements)) => {
+                        // Typed list literal: (T[]){ ... } with T = element type
+                        write!(self.output, "({}[]){{", self.type_to_c(elem)).unwrap();
+                        for (i, e) in elements.iter().enumerate() {
+                            if i > 0 {
+                                write!(self.output, ", ").unwrap();
+                            }
+                            self.emit_expression(e)?;
+                        }
+                        write!(self.output, "}}").unwrap();
+                    }
+                    _ => self.emit_expression(value)?,
+                }
                 writeln!(self.output, ";").unwrap();
             }
             Stmt::Assignment { target, value } => {
