@@ -55,4 +55,16 @@
     print_int(words.len());
     print("words[2] =");
     println(words[2]);
+
+    // Slices, equality, explicit free
+    let sub: List<Int64> = dyn[1..3];
+    print("slice len =");
+    print_int(sub.len());
+    print("slice[0] =");
+    print_int(sub[0]);
+    print("slice eq =");
+    print_bool(sub == [2, 3]);
+    sub.free();
+    print("after free len =");
+    print_int(sub.len());
 }

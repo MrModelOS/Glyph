@@ -64,6 +64,12 @@ pub enum TypeError {
 
     #[error("Async generic functions are not supported: '{0}'")]
     AsyncGeneric(String),
+
+    #[error("in function '{name}': {source}")]
+    InFunction {
+        name: String,
+        source: Box<TypeError>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -386,6 +392,7 @@ impl TypeChecker {
     fn check_top_level_item(&mut self, item: &TopLevelItem) -> Result<(), TypeError> {
         match item {
             TopLevelItem::Function {
+                name,
                 type_params,
                 params,
                 body,
@@ -409,13 +416,18 @@ impl TypeChecker {
                     generic_fns: self.generic_fns.clone(),
                     instantiated: self.instantiated.clone(),
                 };
-                checker.check_block(body, return_type.as_ref())?;
+                checker
+                    .check_block(body, return_type.as_ref())
+                    .map_err(|e| TypeError::InFunction {
+                        name: name.clone(),
+                        source: Box::new(e),
+                    })?;
                 self.instantiated = checker.instantiated;
 
                 Ok(())
             }
             TopLevelItem::Impl {
-                type_name: _,
+                type_name,
                 methods,
                 ..
             } => {
@@ -429,7 +441,12 @@ impl TypeChecker {
                         generic_fns: self.generic_fns.clone(),
                         instantiated: self.instantiated.clone(),
                     };
-                    checker.check_block(&method.body, method.return_type.as_ref())?;
+                    checker
+                        .check_block(&method.body, method.return_type.as_ref())
+                        .map_err(|e| TypeError::InFunction {
+                            name: format!("{}::{}", type_name, method.name),
+                            source: Box::new(e),
+                        })?;
                     self.instantiated = checker.instantiated;
                 }
                 Ok(())
@@ -944,6 +961,16 @@ impl TypeChecker {
                     Type::List(elem_type) => match method.as_str() {
                         "len" => Ok(Type::Int64),
                         "iter" => Ok(Type::Async(elem_type.clone())),
+                        "free" => {
+                            if args.is_empty() {
+                                Ok(Type::Void)
+                            } else {
+                                Err(TypeError::WrongArgumentCount {
+                                    expected: 0,
+                                    found: args.len(),
+                                })
+                            }
+                        }
                         "append" => {
                             if args.len() == 1 {
                                 let arg_type = self.check_expression(&args[0])?;
@@ -1114,7 +1141,24 @@ impl TypeChecker {
 
                 match &object_type {
                     Type::List(elem_type) => {
-                        if matches!(index_type, Type::UInt64 | Type::Int64) {
+                        // Slice: xs[a..b] / xs[a..=b] -> List<T>
+                        if matches!(&**index, Expr::Range { .. }) {
+                            match &index_type {
+                                Type::List(range_elem) => match range_elem.as_ref() {
+                                    Type::Int64 | Type::UInt64 => {
+                                        Ok(Type::List(elem_type.clone()))
+                                    }
+                                    other => Err(TypeError::TypeMismatch {
+                                        expected: "Int64 or UInt64 range".to_string(),
+                                        found: format!("{}", other),
+                                    }),
+                                },
+                                other => Err(TypeError::TypeMismatch {
+                                    expected: "range".to_string(),
+                                    found: format!("{}", other),
+                                }),
+                            }
+                        } else if matches!(index_type, Type::UInt64 | Type::Int64) {
                             Ok((**elem_type).clone())
                         } else {
                             Err(TypeError::TypeMismatch {

@@ -183,6 +183,9 @@ impl CCodegen {
         writeln!(self.output, "void glyph_list_append(GlyphList* list, const void* value);").unwrap();
         writeln!(self.output, "GlyphList glyph_list_concat(GlyphList a, GlyphList b);").unwrap();
         writeln!(self.output, "GlyphList glyph_range_i64(int64_t start, int64_t end, int inclusive);").unwrap();
+        writeln!(self.output, "GlyphList glyph_list_slice(GlyphList list, int64_t start, int64_t end, int inclusive);").unwrap();
+        writeln!(self.output, "int glyph_list_eq(GlyphList a, GlyphList b);").unwrap();
+        writeln!(self.output, "void glyph_list_free(GlyphList *l);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Math").unwrap();
@@ -1301,8 +1304,9 @@ impl CCodegen {
                         write!(self.output, ")").unwrap();
                     }
                 } else if matches!(op, BinOp::Eq | BinOp::Neq) {
-                    // C equality only works on scalars and pointers; anything
-                    // else (structs, lists) is rejected loudly.
+                    // C equality only works on scalars and pointers; structs
+                    // are rejected loudly, lists of POD scalars go through
+                    // glyph_list_eq (byte equality).
                     let comparable = |t: Option<Type>| {
                         matches!(
                             t,
@@ -1322,16 +1326,48 @@ impl CCodegen {
                     let rt = self
                         .resolved_expr_type(right)
                         .map(|t| self.subst_active(&t));
-                    // Unknown types keep the old behavior (best effort).
-                    if lt.is_some() && rt.is_some() && !(comparable(lt) && comparable(rt)) {
-                        return Err(CodegenError::CannotGenerateExpression);
+                    // Lists of POD scalars compare by value (len + memcmp).
+                    // Void element = unknown/empty literal, compatible with any POD.
+                    let is_pod = |t: &Type| {
+                        matches!(
+                            t,
+                            Type::Int64 | Type::UInt64 | Type::Float64 | Type::Bool
+                        )
+                    };
+                    let pod_list_eq = match (&lt, &rt) {
+                        (Some(Type::List(a)), Some(Type::List(b))) => {
+                            (a == b && is_pod(a))
+                                || (matches!(a.as_ref(), Type::Void) && is_pod(b))
+                                || (matches!(b.as_ref(), Type::Void) && is_pod(a))
+                        }
+                        _ => false,
+                    };
+                    if pod_list_eq {
+                        if matches!(op, BinOp::Eq) {
+                            write!(self.output, "glyph_list_eq(").unwrap();
+                        } else {
+                            write!(self.output, "(!glyph_list_eq(").unwrap();
+                        }
+                        self.emit_expression(left)?;
+                        write!(self.output, ", ").unwrap();
+                        self.emit_expression(right)?;
+                        if matches!(op, BinOp::Eq) {
+                            write!(self.output, ")").unwrap();
+                        } else {
+                            write!(self.output, "))").unwrap();
+                        }
+                    } else {
+                        // Unknown types keep the old behavior (best effort).
+                        if lt.is_some() && rt.is_some() && !(comparable(lt) && comparable(rt)) {
+                            return Err(CodegenError::CannotGenerateExpression);
+                        }
+                        write!(self.output, "(").unwrap();
+                        self.emit_expression(left)?;
+                        let op_str = self.binop_to_c(op).to_string();
+                        write!(self.output, " {} ", op_str).unwrap();
+                        self.emit_expression(right)?;
+                        write!(self.output, ")").unwrap();
                     }
-                    write!(self.output, "(").unwrap();
-                    self.emit_expression(left)?;
-                    let op_str = self.binop_to_c(op).to_string();
-                    write!(self.output, " {} ", op_str).unwrap();
-                    self.emit_expression(right)?;
-                    write!(self.output, ")").unwrap();
                 } else {
                     write!(self.output, "(").unwrap();
                     self.emit_expression(left)?;
@@ -1474,6 +1510,16 @@ impl CCodegen {
                             }
                         }
                     }
+                    "free" => {
+                        if !args.is_empty() {
+                            return Err(CodegenError::UnresolvedMethod {
+                                method: "free".to_string(),
+                            });
+                        }
+                        write!(self.output, "glyph_list_free(&(").unwrap();
+                        self.emit_expression(object)?;
+                        write!(self.output, "))").unwrap();
+                    }
                     "send" => {
                         let elem = self
                             .resolved_expr_type(object)
@@ -1551,6 +1597,18 @@ impl CCodegen {
                 write!(self.output, ".{}", field).unwrap();
             }
             Expr::IndexAccess { object, index } => {
+                if let Expr::Range { start, end, inclusive } = &**index {
+                    if self.resolved_list_elem(object).is_some() {
+                        write!(self.output, "glyph_list_slice(").unwrap();
+                        self.emit_expression(object)?;
+                        write!(self.output, ", ").unwrap();
+                        self.emit_expression(start)?;
+                        write!(self.output, ", ").unwrap();
+                        self.emit_expression(end)?;
+                        write!(self.output, ", {})", if *inclusive { "1" } else { "0" }).unwrap();
+                        return Ok(());
+                    }
+                }
                 match self.resolved_list_elem(object) {
                     Some(elem) => {
                         // GlyphList indexing through the heap buffer.
@@ -2205,7 +2263,13 @@ impl CCodegen {
                 _ => t,
             }),
             Expr::Ref(inner) => self.concrete_type_of(inner, var_types),
-            Expr::IndexAccess { object, .. } => {
+            Expr::IndexAccess { object, index } => {
+                if matches!(&**index, Expr::Range { .. }) {
+                    return match self.concrete_type_of(object, var_types)? {
+                        Type::List(elem) => Some(Type::List(elem)),
+                        _ => None,
+                    };
+                }
                 match self.concrete_type_of(object, var_types)? {
                     Type::List(elem) => Some(*elem),
                     _ => None,
@@ -2289,6 +2353,7 @@ impl CCodegen {
                         }
                         (Type::List(_), "len") => Some(Type::Int64),
                         (Type::List(_), "append") => Some(Type::Void),
+                        (Type::List(_), "free") => Some(Type::Void),
                         (Type::Channel(_), "send") => Some(Type::Bool),
                         (Type::Channel(elem), "recv") => {
                             Some(Type::Option(elem.clone()))
@@ -2481,6 +2546,10 @@ impl CCodegen {
     /// Returns an owned copy to avoid borrow conflicts with &self.
     fn resolved_expr_type(&self, expr: &Expr) -> Option<Type> {
         match expr {
+            Expr::IntegerLiteral(_) | Expr::HexLiteral(_) => Some(Type::Int64),
+            Expr::FloatLiteral(_) => Some(Type::Float64),
+            Expr::StringLiteral(_) => Some(Type::String),
+            Expr::BoolLiteral(_) => Some(Type::Bool),
             Expr::Identifier(name) => self.variable_types.get(name).cloned().map(|t| match t {
                 Type::Ref(inner) => *inner,
                 _ => t,
@@ -2498,8 +2567,30 @@ impl CCodegen {
                     })
             }
             Expr::Ref(inner) => self.resolved_expr_type(inner),
-            Expr::IndexAccess { object, .. } => {
+            Expr::ArrayLiteral(elems) => {
+                let elem = elems
+                    .first()
+                    .and_then(|e| self.resolved_expr_type(e))
+                    .unwrap_or(Type::Void);
+                Some(Type::List(Box::new(elem)))
+            }
+            Expr::Range { start, end, .. } => {
+                let st = self.resolved_expr_type(start)?;
+                let et = self.resolved_expr_type(end)?;
+                if st == et {
+                    Some(Type::List(Box::new(st)))
+                } else {
+                    None
+                }
+            }
+            Expr::IndexAccess { object, index } => {
                 let obj_ty = self.resolved_expr_type(object).map(|t| self.subst_active(&t))?;
+                if matches!(&**index, Expr::Range { .. }) {
+                    return match obj_ty {
+                        Type::List(elem) => Some(Type::List(elem)),
+                        _ => None,
+                    };
+                }
                 match obj_ty {
                     Type::List(elem) => Some(*elem),
                     _ => None,
@@ -2848,6 +2939,28 @@ impl CCodegen {
         writeln!(self.output, "    int64_t* d = (int64_t*)l.data;").unwrap();
         writeln!(self.output, "    for (int64_t i = 0; i < n; i++) d[i] = s + i;").unwrap();
         writeln!(self.output, "    return l;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "GlyphList glyph_list_slice(GlyphList l, int64_t s, int64_t e, int inclusive) {{").unwrap();
+        writeln!(self.output, "    int64_t end = inclusive ? e + 1 : e;").unwrap();
+        writeln!(self.output, "    if (s < 0) s = 0;").unwrap();
+        writeln!(self.output, "    if (end > l.len) end = l.len;").unwrap();
+        writeln!(self.output, "    int64_t n = end - s;").unwrap();
+        writeln!(self.output, "    if (n < 0) n = 0;").unwrap();
+        writeln!(self.output, "    GlyphList o = glyph_list_new(l.elem_size, n);").unwrap();
+        writeln!(self.output, "    if (n > 0) memcpy(o.data, (char*)l.data + s * l.elem_size, (size_t)(n * l.elem_size));").unwrap();
+        writeln!(self.output, "    return o;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "int glyph_list_eq(GlyphList a, GlyphList b) {{").unwrap();
+        writeln!(self.output, "    if (a.len != b.len || a.elem_size != b.elem_size) return 0;").unwrap();
+        writeln!(self.output, "    if (a.len == 0) return 1;").unwrap();
+        writeln!(self.output, "    if (!a.data || !b.data) return 0;").unwrap();
+        writeln!(self.output, "    return memcmp(a.data, b.data, (size_t)(a.len * a.elem_size)) == 0;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "void glyph_list_free(GlyphList *l) {{").unwrap();
+        writeln!(self.output, "    if (!l) return;").unwrap();
+        writeln!(self.output, "    free(l->data);").unwrap();
+        writeln!(self.output, "    l->data = NULL;").unwrap();
+        writeln!(self.output, "    l->len = 0;").unwrap();
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
