@@ -1,0 +1,180 @@
+// Fifteen puzzle (пятнашки) — a real interactive Glyph program.
+// Board is a List<Int64> of 16 cells: tiles 1..15 and 0 for the empty cell.
+// Shuffle does 300 random legal moves from the solved state, so the puzzle
+// is always solvable. Deterministic LCG seeding keeps runs reproducible.
+
+@fn make_solved() -> List<Int64> {
+    return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0];
+}
+
+@fn find(board: List<Int64>, value: Int64) -> Int64 {
+    let mut i: Int64 = 0;
+    while i < 16 {
+        if board[i] == value {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+@fn swap_pos(board: List<Int64>, a: Int64, b: Int64) -> Void {
+    let tmp: Int64 = board[a];
+    board[a] = board[b];
+    board[b] = tmp;
+}
+
+@fn abs_i64(x: Int64) -> Int64 {
+    if x < 0 {
+        return 0 - x;
+    }
+    return x;
+}
+
+@fn move_tile(board: List<Int64>, t: Int64) -> Bool {
+    if t < 1 || t > 15 {
+        return false;
+    }
+    let empty: Int64 = find(board, 0);
+    let pos: Int64 = find(board, t);
+    if empty < 0 || pos < 0 {
+        return false;
+    }
+    let dr: Int64 = abs_i64(pos / 4 - empty / 4);
+    let dc: Int64 = abs_i64(pos % 4 - empty % 4);
+    if dr + dc != 1 {
+        return false;
+    }
+    swap_pos(board, pos, empty);
+    return true;
+}
+
+@fn next_rand(state: Int64) -> Int64 {
+    return (state * 214013 + 2531011) % 2147483648;
+}
+
+@fn shuffle(board: List<Int64>, seed: Int64) -> Int64 {
+    let mut state: Int64 = seed;
+    let mut k: Int64 = 0;
+    while k < 300 {
+        state = next_rand(state);
+        let dir: Int64 = (state / 65536) % 4;
+        let empty: Int64 = find(board, 0);
+        let mut nr: Int64 = empty / 4;
+        let mut nc: Int64 = empty % 4;
+        if dir == 0 {
+            nr = nr - 1;
+        }
+        if dir == 1 {
+            nr = nr + 1;
+        }
+        if dir == 2 {
+            nc = nc - 1;
+        }
+        if dir == 3 {
+            nc = nc + 1;
+        }
+        if nr >= 0 && nr < 4 && nc >= 0 && nc < 4 {
+            swap_pos(board, empty, nr * 4 + nc);
+        }
+        k = k + 1;
+    }
+    return state;
+}
+
+@fn is_solved(board: List<Int64>) -> Bool {
+    let mut i: Int64 = 0;
+    while i < 15 {
+        if board[i] != i + 1 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return board[15] == 0;
+}
+
+@fn cell(v: Int64) -> String {
+    if v == 0 {
+        return "|    ";
+    }
+    if v < 10 {
+        return "| " ++ int_to_string(v) ++ "  ";
+    }
+    return "| " ++ int_to_string(v) ++ " ";
+}
+
+@fn render(board: List<Int64>) -> String {
+    let mut out: String = "  +----+----+----+----+\n";
+    let mut i: Int64 = 0;
+    while i < 16 {
+        out = out ++ cell(board[i]);
+        i = i + 1;
+        if i % 4 == 0 {
+            out = out ++ "|\n  +----+----+----+----+\n";
+        }
+    }
+    return out;
+}
+
+@test @fn test_find() -> Void {
+    let b: List<Int64> = make_solved();
+    assert_eq(find(b, 7), 6, "find tile 7");
+    assert_eq(find(b, 0), 15, "find empty cell");
+}
+
+@test @fn test_solved() -> Void {
+    assert(is_solved(make_solved()), "solved board reports solved");
+    let scrambled: List<Int64> = [2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0];
+    assert(!is_solved(scrambled), "scrambled board is not solved");
+}
+
+@test @fn test_move() -> Void {
+    let b: List<Int64> = make_solved();
+    assert(move_tile(b, 15), "corner tile can slide toward empty");
+    assert_eq(b[14], 0, "empty moved");
+    assert_eq(b[15], 15, "tile slid");
+    assert(!move_tile(b, 12), "diagonal tile cannot move");
+    assert(!move_tile(b, 99), "out-of-range tile rejected");
+}
+
+@fn main() -> Void {
+    println("=== Glyph fifteen ===");
+    println("Enter a tile number 1-15 to slide it into the empty cell.");
+    println("Enter 'q' to quit.");
+    let board: List<Int64> = make_solved();
+    let mut state: Int64 = shuffle(board, 42);
+    let mut moves: Int64 = 0;
+    while true {
+        println(render(board));
+        println("Moves: " ++ int_to_string(moves));
+        print("Tile> ");
+        let line: String = read_line();
+        if len(line) == 0 {
+            println("(end of input)");
+            break;
+        }
+        if starts_with(line, "q") {
+            break;
+        }
+        let parsed: Option<Int64> = parse_int(line);
+        let t: Int64 = match parsed {
+            | Some(v) => v,
+            | None => 0
+        };
+        if t == 0 {
+            println("Bad input, try again.");
+            continue;
+        }
+        if move_tile(board, t) {
+            moves = moves + 1;
+        } else {
+            println("That tile can't move.");
+        }
+        if is_solved(board) {
+            println(render(board));
+            println("Solved in " ++ int_to_string(moves) ++ " moves!");
+            break;
+        }
+    }
+    println("Bye!");
+}

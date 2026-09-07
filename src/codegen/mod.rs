@@ -137,6 +137,7 @@ impl CCodegen {
         writeln!(self.output, "void glyph_print_int(int64_t v);").unwrap();
         writeln!(self.output, "void glyph_print_float(double v);").unwrap();
         writeln!(self.output, "void glyph_print_bool(int v);").unwrap();
+        writeln!(self.output, "char* glyph_read_line(void);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// String").unwrap();
@@ -1236,7 +1237,7 @@ impl CCodegen {
             Expr::IntegerLiteral(value) => Ok(value.to_string()),
             Expr::FloatLiteral(value) => Ok(value.to_string()),
             Expr::BoolLiteral(value) => Ok(if *value { "1" } else { "0" }.to_string()),
-            Expr::StringLiteral(value) => Ok(format!("\"{}\"", value)),
+            Expr::StringLiteral(value) => Ok(format!("\"{}\"", Self::escape_c_string(value))),
             Expr::UnaryOp { op, expr } => {
                 let inner = self.const_expr_to_c(expr, visited)?;
                 match op {
@@ -1284,7 +1285,7 @@ impl CCodegen {
                 write!(self.output, "{}", value).unwrap();
             }
             Expr::StringLiteral(value) => {
-                write!(self.output, "\"{}\"", value).unwrap();
+                write!(self.output, "\"{}\"", Self::escape_c_string(value)).unwrap();
             }
             Expr::BoolLiteral(value) => {
                 write!(self.output, "{}", if *value { "1" } else { "0" }).unwrap();
@@ -2677,6 +2678,16 @@ impl CCodegen {
         writeln!(self.output, "void glyph_print_bool(int v) {{ printf(\"%s\\n\", v ? \"true\" : \"false\"); }}").unwrap();
         writeln!(self.output, "").unwrap();
 
+        // Reads a line from stdin; returns "" on EOF/error.
+        writeln!(self.output, "char* glyph_read_line(void) {{").unwrap();
+        writeln!(self.output, "    char buf[1024];").unwrap();
+        writeln!(self.output, "    if (!fgets(buf, sizeof(buf), stdin)) return strdup(\"\");").unwrap();
+        writeln!(self.output, "    size_t l = strlen(buf);").unwrap();
+        writeln!(self.output, "    while (l > 0 && (buf[l-1] == '\\n' || buf[l-1] == '\\r')) buf[--l] = 0;").unwrap();
+        writeln!(self.output, "    return strdup(buf);").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "").unwrap();
+
         // String functions
         writeln!(self.output, "char* glyph_concat_strings(const char* a, const char* b) {{").unwrap();
         writeln!(self.output, "    size_t la = strlen(a), lb = strlen(b);").unwrap();
@@ -3060,7 +3071,22 @@ impl CCodegen {
         writeln!(self.output, "").unwrap();
     }
 
-    fn map_builtin_name_static(name: &str) -> Option<&'static str> {
+    pub fn escape_c_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn map_builtin_name_static(name: &str) -> Option<&'static str> {
         match name {
             // io
             "print" | "println" => Some("glyph_println"),
@@ -3068,6 +3094,7 @@ impl CCodegen {
             "print_int" => Some("glyph_print_int"),
             "print_float" => Some("glyph_print_float"),
             "print_bool" => Some("glyph_print_bool"),
+            "read_line" | "__builtin_read_line" => Some("glyph_read_line"),
             // string
             "len" => Some("glyph_strlen"),
             "concat" => Some("glyph_concat_strings"),
@@ -3240,4 +3267,18 @@ pub fn compile_to_c_tests(
     std::fs::write(output_path, c_code).map_err(|_e| CodegenError::CannotGenerateExpression)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CCodegen;
+
+    #[test]
+    fn escape_c_string_handles_c_sensitive_chars() {
+        assert_eq!(CCodegen::escape_c_string("a\nb"), "a\\nb");
+        assert_eq!(CCodegen::escape_c_string("a\tb"), "a\\tb");
+        assert_eq!(CCodegen::escape_c_string("say \"hi\""), "say \\\"hi\\\"");
+        assert_eq!(CCodegen::escape_c_string("a\\b"), "a\\\\b");
+        assert_eq!(CCodegen::escape_c_string("привет"), "привет");
+    }
 }

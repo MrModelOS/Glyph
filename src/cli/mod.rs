@@ -582,19 +582,17 @@ fn run_file(input: &PathBuf, compiler: &str, opt: &str) {
         process::exit(1);
     }
 
-    // Run the binary
-    let output = process::Command::new(binary.to_str().unwrap())
-        .output()
+    // Run the binary, inheriting stdio so interactive programs (read_line)
+    // and their output behave normally.
+    let status = process::Command::new(binary.to_str().unwrap())
+        .status()
         .unwrap_or_else(|e| {
             eprintln!("Error running binary: {}", e);
             process::exit(1);
         });
 
-    print!("{}", String::from_utf8_lossy(&output.stdout));
-
-    if !output.status.success() {
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
-        process::exit(1);
+    if !status.success() {
+        process::exit(status.code().unwrap_or(1));
     }
 
     // Cleanup
