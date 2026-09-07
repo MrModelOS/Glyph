@@ -64,47 +64,65 @@ pub fn substitute_params(subst: &HashMap<String, Type>, params: &[FunctionParam]
 pub fn substitute_stmt(subst: &HashMap<String, Type>, stmt: &Stmt) -> Stmt {
     match stmt {
         Stmt::Let {
+            line,
             name,
             ty,
             value,
             mutable,
         } => Stmt::Let {
+            line: *line,
             name: name.clone(),
             ty: ty.as_ref().map(|t| substitute_type(subst, t)),
             value: substitute_expr(subst, value),
             mutable: *mutable,
         },
-        Stmt::Assignment { target, value } => Stmt::Assignment {
+        Stmt::Assignment {
+            line,
+            target,
+            value,
+        } => Stmt::Assignment {
+            line: *line,
             target: substitute_expr(subst, target),
             value: substitute_expr(subst, value),
         },
-        Stmt::Expression(e) => Stmt::Expression(substitute_expr(subst, e)),
-        Stmt::Return(Some(e)) => Stmt::Return(Some(substitute_expr(subst, e))),
-        Stmt::Return(None) => Stmt::Return(None),
-        Stmt::Break => Stmt::Break,
-        Stmt::Continue => Stmt::Continue,
-        Stmt::Loop(body) => Stmt::Loop(body.iter().map(|s| substitute_stmt(subst, s)).collect()),
-        Stmt::While { condition, body } => Stmt::While {
+        Stmt::Expression(line, e) => Stmt::Expression(*line, substitute_expr(subst, e)),
+        Stmt::Return(line, Some(e)) => Stmt::Return(*line, Some(substitute_expr(subst, e))),
+        Stmt::Return(line, None) => Stmt::Return(*line, None),
+        Stmt::Break(line) => Stmt::Break(*line),
+        Stmt::Continue(line) => Stmt::Continue(*line),
+        Stmt::Loop(line, body) => {
+            Stmt::Loop(*line, body.iter().map(|s| substitute_stmt(subst, s)).collect())
+        }
+        Stmt::While {
+            line,
+            condition,
+            body,
+        } => Stmt::While {
+            line: *line,
             condition: substitute_expr(subst, condition),
             body: body.iter().map(|s| substitute_stmt(subst, s)).collect(),
         },
         Stmt::For {
+            line,
             variable,
             iterable,
             body,
         } => Stmt::For {
+            line: *line,
             variable: variable.clone(),
             iterable: substitute_expr(subst, iterable),
             body: body.iter().map(|s| substitute_stmt(subst, s)).collect(),
         },
         Stmt::Guard {
+            line,
             condition,
             else_body,
         } => Stmt::Guard {
+            line: *line,
             condition: substitute_expr(subst, condition),
             else_body: else_body.iter().map(|s| substitute_stmt(subst, s)).collect(),
         },
-        Stmt::Spawn(e) => Stmt::Spawn(substitute_expr(subst, e)),
+        Stmt::Spawn(line, e) => Stmt::Spawn(*line, substitute_expr(subst, e)),
     }
 }
 

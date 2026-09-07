@@ -724,7 +724,7 @@ impl CCodegen {
             // If this is the last statement and it's an expression, add return
             // Only for non-void return types
             if is_last && return_type.is_some() && !matches!(return_type, Some(Type::Void)) {
-                if let Stmt::Expression(expr) = stmt {
+                if let Stmt::Expression(_, expr) = stmt {
                     self.emit_indent();
                     write!(self.output, "return ").unwrap();
                     self.emit_expression(expr)?;
@@ -1069,6 +1069,7 @@ impl CCodegen {
                 ty,
                 value,
                 mutable: _,
+                ..
             } => {
                 // Substitute generic type parameters for the current instance
                 let concrete_ty = ty.as_ref().map(|t| self.subst_active(t));
@@ -1149,7 +1150,7 @@ impl CCodegen {
                     }
                 }
             }
-            Stmt::Assignment { target, value } => {
+            Stmt::Assignment { target, value, .. } => {
                 self.emit_indent();
                 let is_map_put = matches!(
                     target,
@@ -1201,12 +1202,12 @@ impl CCodegen {
                     writeln!(self.output, "));").unwrap();
                 }
             }
-            Stmt::Expression(expr) => {
+            Stmt::Expression(_, expr) => {
                 self.emit_indent();
                 self.emit_expression(expr)?;
                 writeln!(self.output, ";").unwrap();
             }
-            Stmt::Return(expr) => {
+            Stmt::Return(_, expr) => {
                 self.emit_indent();
                 write!(self.output, "return").unwrap();
                 if let Some(e) = expr {
@@ -1215,15 +1216,15 @@ impl CCodegen {
                 }
                 writeln!(self.output, ";").unwrap();
             }
-            Stmt::Break => {
+            Stmt::Break(_) => {
                 self.emit_indent();
                 writeln!(self.output, "break;").unwrap();
             }
-            Stmt::Continue => {
+            Stmt::Continue(_) => {
                 self.emit_indent();
                 writeln!(self.output, "continue;").unwrap();
             }
-            Stmt::Loop(body) => {
+            Stmt::Loop(_, body) => {
                 self.emit_indent();
                 writeln!(self.output, "while (1) {{").unwrap();
                 self.indent += 1;
@@ -1236,7 +1237,7 @@ impl CCodegen {
                 self.emit_indent();
                 writeln!(self.output, "}}").unwrap();
             }
-            Stmt::While { condition, body } => {
+            Stmt::While { condition, body, .. } => {
                 self.emit_indent();
                 write!(self.output, "while (").unwrap();
                 self.emit_expression(condition)?;
@@ -1255,6 +1256,7 @@ impl CCodegen {
                 variable,
                 iterable,
                 body,
+                ..
             } => {
                 if let Expr::Range { start, end, inclusive } = iterable {
                     // Range: int64_t loop variable + counter
@@ -1323,7 +1325,7 @@ impl CCodegen {
                     return Err(CodegenError::InvalidIterable { ty });
                 }
             }
-            Stmt::Guard { condition, else_body } => {
+            Stmt::Guard { condition, else_body, .. } => {
                 self.emit_indent();
                 write!(self.output, "if (!(").unwrap();
                 self.emit_expression(condition)?;
@@ -1338,7 +1340,7 @@ impl CCodegen {
                 self.emit_indent();
                 writeln!(self.output, "}}").unwrap();
             }
-            Stmt::Spawn(expr) => {
+            Stmt::Spawn(_, expr) => {
                 // Launch a lazy async handle on a thread (idempotent).
                 self.emit_indent();
                 write!(self.output, "glyph_async_spawn(").unwrap();
@@ -2305,16 +2307,16 @@ write!(self.output, "\"{}\", &_mv); }})", Self::escape_c_string(s)).unwrap();
                         }
                     }
                 }
-                Stmt::Assignment { target, value } => {
+Stmt::Assignment { target, value, .. } => {
                     self.scan_expr(target, var_types, active_subst)?;
                     self.scan_expr(value, var_types, active_subst)?;
                 }
-                Stmt::Expression(e) => self.scan_expr(e, var_types, active_subst)?,
-                Stmt::Return(Some(e)) => self.scan_expr(e, var_types, active_subst)?,
-                Stmt::Return(None) => {}
-                Stmt::Break | Stmt::Continue => {}
-                Stmt::Loop(b) => self.scan_stmts(b, var_types, active_subst)?,
-                Stmt::While { condition, body } => {
+                Stmt::Expression(_, e) => self.scan_expr(e, var_types, active_subst)?,
+                Stmt::Return(_, Some(e)) => self.scan_expr(e, var_types, active_subst)?,
+                Stmt::Return(_, None) => {}
+                Stmt::Break(_) | Stmt::Continue(_) => {}
+                Stmt::Loop(_, b) => self.scan_stmts(b, var_types, active_subst)?,
+                Stmt::While { condition, body, .. } => {
                     self.scan_expr(condition, var_types, active_subst)?;
                     self.scan_stmts(body, var_types, active_subst)?;
                 }
@@ -2322,6 +2324,7 @@ write!(self.output, "\"{}\", &_mv); }})", Self::escape_c_string(s)).unwrap();
                     variable,
                     iterable,
                     body,
+                    ..
                 } => {
                     self.scan_expr(iterable, var_types, active_subst)?;
                     let iter_ty = self.concrete_type_of(iterable, var_types);
@@ -2333,11 +2336,12 @@ write!(self.output, "\"{}\", &_mv); }})", Self::escape_c_string(s)).unwrap();
                 Stmt::Guard {
                     condition,
                     else_body,
+                    ..
                 } => {
                     self.scan_expr(condition, var_types, active_subst)?;
                     self.scan_stmts(else_body, var_types, active_subst)?;
                 }
-                Stmt::Spawn(e) => self.scan_expr(e, var_types, active_subst)?,
+                Stmt::Spawn(_, e) => self.scan_expr(e, var_types, active_subst)?,
             }
         }
         Ok(())

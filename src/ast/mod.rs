@@ -242,6 +242,7 @@ pub enum Pattern {
 pub enum Stmt {
     // Variable declaration
     Let {
+        line: usize,
         name: String,
         ty: Option<Type>,
         value: Expr,
@@ -250,33 +251,36 @@ pub enum Stmt {
 
     // Assignment
     Assignment {
+        line: usize,
         target: Expr,
         value: Expr,
     },
 
     // Expression statement
-    Expression(Expr),
+    Expression(usize, Expr),
 
     // Return statement
-    Return(Option<Expr>),
+    Return(usize, Option<Expr>),
 
     // Break statement
-    Break,
+    Break(usize),
 
     // Continue statement
-    Continue,
+    Continue(usize),
 
     // Loop statement
-    Loop(Vec<Stmt>),
+    Loop(usize, Vec<Stmt>),
 
     // While loop
     While {
+        line: usize,
         condition: Expr,
         body: Vec<Stmt>,
     },
 
     // For loop
     For {
+        line: usize,
         variable: String,
         iterable: Expr,
         body: Vec<Stmt>,
@@ -284,12 +288,32 @@ pub enum Stmt {
 
     // Guard statement
     Guard {
+        line: usize,
         condition: Expr,
         else_body: Vec<Stmt>,
     },
 
     // Spawn statement
-    Spawn(Expr),
+    Spawn(usize, Expr),
+}
+
+impl Stmt {
+    /// The source line where this statement starts (1-based).
+    pub fn line(&self) -> usize {
+        match self {
+            Stmt::Let { line, .. }
+            | Stmt::Assignment { line, .. }
+            | Stmt::While { line, .. }
+            | Stmt::For { line, .. }
+            | Stmt::Guard { line, .. } => *line,
+            Stmt::Expression(line, _)
+            | Stmt::Return(line, _)
+            | Stmt::Break(line)
+            | Stmt::Continue(line)
+            | Stmt::Loop(line, _)
+            | Stmt::Spawn(line, _) => *line,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

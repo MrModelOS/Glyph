@@ -341,18 +341,18 @@ fn rewrite_self_references(
 fn remap_stmt(stmt: &mut Stmt, self_names: &HashSet<String>, prefix: &str) {
     match stmt {
         Stmt::Let { value, .. } => remap_expr(value, self_names, prefix),
-        Stmt::Assignment { target, value } => {
+        Stmt::Assignment { target, value, .. } => {
             remap_expr(target, self_names, prefix);
             remap_expr(value, self_names, prefix);
         }
-        Stmt::Expression(expr) => remap_expr(expr, self_names, prefix),
-        Stmt::Return(Some(expr)) => remap_expr(expr, self_names, prefix),
-        Stmt::Loop(body) => {
+        Stmt::Expression(_, expr) => remap_expr(expr, self_names, prefix),
+        Stmt::Return(_, Some(expr)) => remap_expr(expr, self_names, prefix),
+        Stmt::Loop(_, body) => {
             for s in body {
                 remap_stmt(s, self_names, prefix);
             }
         }
-        Stmt::While { condition, body } => {
+        Stmt::While { condition, body, .. } => {
             remap_expr(condition, self_names, prefix);
             for s in body {
                 remap_stmt(s, self_names, prefix);
@@ -364,13 +364,13 @@ fn remap_stmt(stmt: &mut Stmt, self_names: &HashSet<String>, prefix: &str) {
                 remap_stmt(s, self_names, prefix);
             }
         }
-        Stmt::Guard { condition, else_body } => {
+        Stmt::Guard { condition, else_body, .. } => {
             remap_expr(condition, self_names, prefix);
             for s in else_body {
                 remap_stmt(s, self_names, prefix);
             }
         }
-        Stmt::Spawn(expr) => remap_expr(expr, self_names, prefix),
+        Stmt::Spawn(_, expr) => remap_expr(expr, self_names, prefix),
         _ => {}
     }
 }

@@ -625,14 +625,16 @@ impl Parser {
             Token::Let => self.parse_let(),
             Token::Return => self.parse_return(),
             Token::Break => {
+                let line = self.peek_spanned().line;
                 self.advance();
                 self.expect(&Token::Semicolon)?;
-                Ok(Stmt::Break)
+                Ok(Stmt::Break(line))
             }
             Token::Continue => {
+                let line = self.peek_spanned().line;
                 self.advance();
                 self.expect(&Token::Semicolon)?;
-                Ok(Stmt::Continue)
+                Ok(Stmt::Continue(line))
             }
             Token::Loop => self.parse_loop(),
             Token::While => self.parse_while(),
@@ -640,18 +642,21 @@ impl Parser {
             Token::Guard => self.parse_guard(),
             Token::Spawn => self.parse_spawn(),
             Token::If => {
+                let line = self.peek_spanned().line;
                 let expr = self.parse_if()?;
-                Ok(Stmt::Expression(expr))
+                Ok(Stmt::Expression(line, expr))
             }
             Token::Match => {
+                let line = self.peek_spanned().line;
                 let expr = self.parse_match()?;
-                Ok(Stmt::Expression(expr))
+                Ok(Stmt::Expression(line, expr))
             }
             _ => self.parse_expression_statement(),
         }
     }
 
     fn parse_let(&mut self) -> Result<Stmt, ParseError> {
+        let line = self.peek_spanned().line;
         self.advance(); // consume let
 
         let mutable = if self.peek() == &Token::Mut {
@@ -675,6 +680,7 @@ impl Parser {
         self.expect(&Token::Semicolon)?;
 
         Ok(Stmt::Let {
+            line,
             name,
             ty,
             value,
@@ -683,6 +689,7 @@ impl Parser {
     }
 
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
+        let line = self.peek_spanned().line;
         self.advance(); // consume return
 
         let value = if self.peek() == &Token::Semicolon {
@@ -693,29 +700,36 @@ impl Parser {
 
         self.expect(&Token::Semicolon)?;
 
-        Ok(Stmt::Return(value))
+        Ok(Stmt::Return(line, value))
     }
 
     fn parse_loop(&mut self) -> Result<Stmt, ParseError> {
+        let line = self.peek_spanned().line;
         self.advance(); // consume loop
         self.expect(&Token::LBrace)?;
         let body = self.parse_block()?;
         self.expect(&Token::RBrace)?;
 
-        Ok(Stmt::Loop(body))
+        Ok(Stmt::Loop(line, body))
     }
 
     fn parse_while(&mut self) -> Result<Stmt, ParseError> {
+        let line = self.peek_spanned().line;
         self.advance(); // consume while
         let condition = self.parse_expression()?;
         self.expect(&Token::LBrace)?;
         let body = self.parse_block()?;
         self.expect(&Token::RBrace)?;
 
-        Ok(Stmt::While { condition, body })
+        Ok(Stmt::While {
+            line,
+            condition,
+            body,
+        })
     }
 
     fn parse_for(&mut self) -> Result<Stmt, ParseError> {
+        let line = self.peek_spanned().line;
         self.advance(); // consume for
         let variable = self.expect_ident()?;
         self.expect(&Token::In)?;
@@ -725,6 +739,7 @@ impl Parser {
         self.expect(&Token::RBrace)?;
 
         Ok(Stmt::For {
+            line,
             variable,
             iterable,
             body,
@@ -732,6 +747,7 @@ impl Parser {
     }
 
     fn parse_guard(&mut self) -> Result<Stmt, ParseError> {
+        let line = self.peek_spanned().line;
         self.advance(); // consume #guard
         self.expect(&Token::LParen)?;
         let condition = self.parse_expression()?;
@@ -748,20 +764,23 @@ impl Parser {
         self.expect(&Token::Semicolon)?;
 
         Ok(Stmt::Guard {
+            line,
             condition,
             else_body,
         })
     }
 
     fn parse_spawn(&mut self) -> Result<Stmt, ParseError> {
+        let line = self.peek_spanned().line;
         self.advance(); // consume spawn
         let expr = self.parse_expression()?;
         self.expect(&Token::Semicolon)?;
 
-        Ok(Stmt::Spawn(expr))
+        Ok(Stmt::Spawn(line, expr))
     }
 
     fn parse_expression_statement(&mut self) -> Result<Stmt, ParseError> {
+        let line = self.peek_spanned().line;
         let expr = self.parse_expression()?;
 
         // Check if this is an assignment
@@ -769,10 +788,14 @@ impl Parser {
             self.advance();
             let value = self.parse_expression()?;
             self.expect(&Token::Semicolon)?;
-            Ok(Stmt::Assignment { target: expr, value })
+            Ok(Stmt::Assignment {
+                line,
+                target: expr,
+                value,
+            })
         } else {
             self.expect(&Token::Semicolon)?;
-            Ok(Stmt::Expression(expr))
+            Ok(Stmt::Expression(line, expr))
         }
     }
 
@@ -1721,7 +1744,7 @@ mod tests {
 
         match &program.items[0] {
             TopLevelItem::Function { body, .. } => {
-                assert!(matches!(&body[0], Stmt::Spawn(_)));
+                assert!(matches!(&body[0], Stmt::Spawn(..)));
                 if let Stmt::Let { value, .. } = &body[1] {
                     assert!(matches!(value, Expr::Await(_)));
                 } else {

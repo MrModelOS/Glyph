@@ -64,6 +64,12 @@ pub enum TypeError {
         name: String,
         source: Box<TypeError>,
     },
+
+    #[error("line {line}: {source}")]
+    AtLine {
+        line: usize,
+        source: Box<TypeError>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -550,7 +556,20 @@ impl TypeChecker {
     ) -> Result<Option<Type>, TypeError> {
         for (i, stmt) in stmts.iter().enumerate() {
             let is_last = i == stmts.len() - 1;
-            let result = self.check_statement(stmt)?;
+            let result = match self.check_statement(stmt) {
+                Ok(r) => r,
+                Err(e) => {
+                    // Keep the innermost line: nested blocks would otherwise
+                    // stack "line X: line Y:" wrappers.
+                    if matches!(e, TypeError::AtLine { .. }) {
+                        return Err(e);
+                    }
+                    return Err(TypeError::AtLine {
+                        line: stmt.line(),
+                        source: Box::new(e),
+                    });
+                }
+            };
 
             if is_last {
                 return Ok(result);
@@ -636,6 +655,7 @@ impl TypeChecker {
                 ty,
                 value,
                 mutable: _,
+                ..
             } => {
                 // A generic call with a declared type: infer remaining type
                 // parameters from the annotation (e.g. `E` in `-> Result<T, E>`).
@@ -672,7 +692,7 @@ impl TypeChecker {
                 self.env.define_variable(name.clone(), stored);
                 Ok(None)
             }
-            Stmt::Assignment { target, value } => {
+            Stmt::Assignment { target, value, .. } => {
                 let target_type = self.check_expression(target)?;
                 let value_type = self.check_expression(value)?;
 
@@ -685,11 +705,11 @@ impl TypeChecker {
 
                 Ok(None)
             }
-            Stmt::Expression(expr) => {
+            Stmt::Expression(_, expr) => {
                 let ty = self.check_expression(expr)?;
                 Ok(Some(ty))
             }
-            Stmt::Return(expr) => {
+            Stmt::Return(_, expr) => {
                 if let Some(e) = expr {
                     let ty = self.check_expression(e)?;
                     Ok(Some(ty))
@@ -697,12 +717,12 @@ impl TypeChecker {
                     Ok(None)
                 }
             }
-            Stmt::Break | Stmt::Continue => Ok(None),
-            Stmt::Loop(body) => {
+            Stmt::Break(_) | Stmt::Continue(_) => Ok(None),
+            Stmt::Loop(_, body) => {
                 self.check_block(body, None)?;
                 Ok(None)
             }
-            Stmt::While { condition, body } => {
+            Stmt::While { condition, body, .. } => {
                 let cond_type = self.check_expression(condition)?;
                 if !matches!(cond_type, Type::Bool) {
                     return Err(TypeError::WhileConditionNotBool);
@@ -714,6 +734,7 @@ impl TypeChecker {
                 variable,
                 iterable,
                 body,
+                ..
             } => {
                 let iter_type = self.check_expression(iterable)?;
 
@@ -730,7 +751,7 @@ impl TypeChecker {
                 self.check_block(body, None)?;
                 Ok(None)
             }
-            Stmt::Guard { condition, else_body } => {
+            Stmt::Guard { condition, else_body, .. } => {
                 let cond_type = self.check_expression(condition)?;
                 if !matches!(cond_type, Type::Bool) {
                     return Err(TypeError::GuardConditionNotBool);
@@ -738,7 +759,7 @@ impl TypeChecker {
                 self.check_block(else_body, None)?;
                 Ok(None)
             }
-            Stmt::Spawn(expr) => {
+            Stmt::Spawn(_, expr) => {
                 let ty = self.check_expression(expr)?;
                 match ty {
                     Type::Async(_) => Ok(None),
