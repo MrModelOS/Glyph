@@ -18,31 +18,16 @@ pub enum ModuleError {
 
     #[error("File I/O error: {0}")]
     IoError(String),
-
-    #[error("Duplicate module: {0}")]
-    DuplicateModule(String),
 }
 
-/// Represents a resolved module with its path and parsed AST
+/// Represents a resolved module with its parsed AST
 #[derive(Debug, Clone)]
 pub struct ResolvedModule {
-    pub name: String,
-    pub path: PathBuf,
     pub ast: Program,
-    pub dependencies: Vec<String>,
-}
-
-/// Dependency graph node for Tarjan's algorithm
-#[derive(Debug, Clone)]
-struct GraphNode {
-    index: Option<usize>,
-    lowlink: Option<usize>,
-    on_stack: bool,
 }
 
 /// Module resolver and dependency graph
 pub struct ModuleResolver {
-    root_dir: PathBuf,
     src_dir: PathBuf,
     modules: HashMap<String, ResolvedModule>,
     graph: HashMap<String, Vec<String>>,
@@ -52,7 +37,6 @@ impl ModuleResolver {
     pub fn new(root_dir: PathBuf) -> Self {
         let src_dir = root_dir.join("src");
         ModuleResolver {
-            root_dir,
             src_dir,
             modules: HashMap::new(),
             graph: HashMap::new(),
@@ -97,10 +81,7 @@ impl ModuleResolver {
         self.modules.insert(
             module_name.to_string(),
             ResolvedModule {
-                name: module_name.to_string(),
-                path: file_path.to_path_buf(),
                 ast,
-                dependencies: dependencies.clone(),
             },
         );
 
@@ -303,24 +284,9 @@ impl ModuleResolver {
         Ok(sorted)
     }
 
-    /// Get all resolved modules
-    pub fn get_modules(&self) -> &HashMap<String, ResolvedModule> {
-        &self.modules
-    }
-
     /// Get a specific module
     pub fn get_module(&self, name: &str) -> Option<&ResolvedModule> {
         self.modules.get(name)
-    }
-
-    /// Get the root directory
-    pub fn root_dir(&self) -> &Path {
-        &self.root_dir
-    }
-
-    /// Get the src directory
-    pub fn src_dir(&self) -> &Path {
-        &self.src_dir
     }
 }
 

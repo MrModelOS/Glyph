@@ -114,7 +114,6 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
         Expr::FloatLiteral(v) => Expr::FloatLiteral(*v),
         Expr::StringLiteral(s) => Expr::StringLiteral(s.clone()),
         Expr::BoolLiteral(b) => Expr::BoolLiteral(*b),
-        Expr::HexLiteral(v) => Expr::HexLiteral(*v),
         Expr::Identifier(n) => Expr::Identifier(n.clone()),
         Expr::BinaryOp { op, left, right } => Expr::BinaryOp {
             op: op.clone(),

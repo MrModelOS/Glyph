@@ -7,9 +7,6 @@ pub enum ParseError {
     #[error("Unexpected token {0:?} at line {1}:{2}, expected {3}")]
     UnexpectedToken(Token, usize, usize, String),
 
-    #[error("Unexpected end of file, expected {0}")]
-    UnexpectedEof(String),
-
     #[error("Lexer error: {0}")]
     LexerError(#[from] LexerError),
 }

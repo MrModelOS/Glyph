@@ -1,3 +1,6 @@
+// Experimental LSP stub: types are reserved for future diagnostics.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Write};
 

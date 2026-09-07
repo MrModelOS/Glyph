@@ -13,7 +13,7 @@ use crate::modules::ModuleResolver;
 
 #[derive(ClapParser)]
 #[command(name = "glyphc")]
-#[command(version = "1.0.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "Glyph language compiler", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -380,8 +380,7 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
         Expr::IntegerLiteral(_)
         | Expr::FloatLiteral(_)
         | Expr::StringLiteral(_)
-        | Expr::BoolLiteral(_)
-        | Expr::HexLiteral(_) => {}
+        | Expr::BoolLiteral(_) => {}
         Expr::Identifier(name) => {
             if self_names.contains(name) {
                 *name = format!("{}{}", prefix, name);

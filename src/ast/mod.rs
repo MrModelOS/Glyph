@@ -159,9 +159,6 @@ pub enum Expr {
 
     // Await expression
     Await(Box<Expr>),
-
-    // String literal (hex escape sequences)
-    HexLiteral(i64),
 }
 
 #[derive(Debug, Clone, PartialEq)]

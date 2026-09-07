@@ -1,6 +1,9 @@
 # Glyph Language Compiler (glyphc)
 
-Компилятор языка программирования **Glyph** v1.0.0, написанный на Rust.
+[![CI](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml/badge.svg)](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml)
+![version](https://img.shields.io/badge/glyphc-v1.2.0-blue)
+
+Компилятор языка программирования **Glyph** v1.2.0, написанный на Rust.
 
 Glyph транслируется в C-код (GNU statement expressions) и собирается через GCC или clang.
 Скомпилированные программы — обычные нативные бинарники.
@@ -20,8 +23,9 @@ Glyph транслируется в C-код (GNU statement expressions) и со
 - Контракты-клозы: `#guard(cond) else { ... };`
 - Модули: `@module`, `@use`, `@pub`, квалифицированные вызовы `math::sqrt`
 - `@const` — именованные константы (компилируются в `static const`)
-- Типизированные списки `List<T>`: литералы `[..]`, индексация `arr[i]`, диапазоны `0..10`,
-  длина `.len()`, `append`, итерация `for x in xs`, конкатенация `++`
+- Типизированные списки `List<T>`: литералы `[..]`, индексация `arr[i]`, срезы `arr[a..b]`/`arr[a..=b]`,
+  диапазоны `0..10`, длина `.len()`, `append`, итерация `for x in xs`, конкатенация `++`,
+  `==` для POD-списков, `xs.free()`
 - `drop(box)` — явное освобождение `Option`/`Result`; временные боксы в `match` освобождаются сами
 - `Result`/`Option` с данными: `Result::Ok(x)`/`Option::Some(x)` — построение и
   сопоставление (`Ok(v)`/`Some(v)` в `match`) с payload, в т.ч. из `parse_int`/`parse_float`
@@ -349,8 +353,8 @@ optimization = "-O2"
 
 ## Примеры
 
-Все примеры в `examples/` — 17 файлов + многофайловый проект `examples/project/` + тестовый
-проект `examples/tests/`. Проверить сразу всё:
+Все примеры в `examples/` — 19 файлов + многофайловые проекты `examples/project/` и
+`examples/tests/`. Проверить сразу всё:
 
 ```bash
 examples/run_all.sh
@@ -363,6 +367,7 @@ examples/run_all.sh
 | `structs.glyph`, `impl_const.glyph` | структуры, свободные функции, `@const` |
 | `enums.glyph`, `enum_test.glyph`, `enum_data.glyph`, `enum_payload.glyph` | перечисления, match, данные вариантов |
 | `match.glyph` | match с паттернами |
+| `lists.glyph` | списки: литералы, срезы, `==`, `.free()`, итерация |
 | `while.glyph`, `v1_features.glyph` | циклы, касты, диапазоны, литералы списков |
 | `math_test.glyph`, `stdlib_test.glyph` | std.math / std.io / std.string |
 | `error_handling.glyph` | `#guard` + enum-ошибка |

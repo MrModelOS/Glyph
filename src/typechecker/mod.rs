@@ -26,26 +26,17 @@ pub enum TypeError {
     #[error("Cannot call non-function: {0}")]
     CannotCallNonFunction(String),
 
-    #[error("Missing return type")]
-    MissingReturnType,
-
     #[error("Guard condition must be Bool")]
     GuardConditionNotBool,
 
-    #[error("For loop iterable must be List, Map, or Range")]
+    #[error("For loop iterable must be a List or a range")]
     InvalidIterableType,
-
-    #[error("Cannot use move on non-owning reference")]
-    InvalidMove,
 
     #[error("Invalid cast from {from} to {to}")]
     InvalidCast { from: String, to: String },
 
     #[error("While condition must be Bool")]
     WhileConditionNotBool,
-
-    #[error("Match not exhaustive: missing variants")]
-    NonExhaustiveMatch,
 
     #[error("Array type mismatch: expected {expected}, found {found}")]
     ArrayTypeMismatch { expected: String, found: String },
@@ -91,8 +82,6 @@ pub struct FunctionSignature {
 pub enum TypeDefinition {
     Struct { fields: Vec<(String, Type)> },
     Enum { variants: Vec<EnumVariantInfo> },
-    Trait { methods: Vec<(String, Vec<(String, Type)>, Option<Type>)> },
-    Impl { type_name: String, methods: Vec<(String, Vec<(String, Type)>, Option<Type>)> },
 }
 
 #[derive(Debug, Clone)]
@@ -725,10 +714,12 @@ impl TypeChecker {
             } => {
                 let iter_type = self.check_expression(iterable)?;
 
+                // Map has no runtime backing, so iterating over it is rejected
+                // here (in typechecking) rather than failing in codegen.
                 let elem_type = match iter_type {
                     Type::List(elem) => *elem,
-                    Type::Map(key, _value) => *key,
                     Type::Array(elem, _) => *elem,
+                    Type::Map(_, _) => return Err(TypeError::InvalidIterableType),
                     _ => return Err(TypeError::InvalidIterableType),
                 };
 
@@ -763,7 +754,6 @@ impl TypeChecker {
             Expr::FloatLiteral(_) => Ok(Type::Float64),
             Expr::StringLiteral(_) => Ok(Type::String),
             Expr::BoolLiteral(_) => Ok(Type::Bool),
-            Expr::HexLiteral(_) => Ok(Type::Int64),
 
             Expr::Identifier(name) => {
                 // Check variables first, then constants
@@ -2031,6 +2021,48 @@ mod tests {
     }
 
         #[test]
+    fn test_type_check_list_slice() {
+        let input = "\
+@fn main() -> Void {
+    let xs: List<Int64> = [10, 20, 30, 40];
+    let a: List<Int64> = xs[1..3];
+    let b: List<Int64> = xs[0..=1];
+    let n: Int64 = a.len();
+    print_int(n);
+    print_int(b[0]);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_for_map_rejected() {
+        // Map has no runtime backing; iterating over it must fail early.
+        let input = "\
+@fn f(m: Map<String, Int64>) -> Void {
+    for k in m {
+        print(k);
+    }
+}
+@fn main() -> Void {}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("in function 'f'"));
+    }
+
+    #[test]
     fn test_type_check_list_dynamic_ops() {
         let input = "\
 @fn sum_all(xs: List<Int64>) -> Int64 {

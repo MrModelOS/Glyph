@@ -7,14 +7,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum CodegenError {
-    #[error("Type not found: {0}")]
-    TypeNotFound(String),
-
     #[error("Function not found: {0}")]
     FunctionNotFound(String),
-
-    #[error("Variable not found: {0}")]
-    VariableNotFound(String),
 
     #[error("Cannot generate code for expression")]
     CannotGenerateExpression,
@@ -1176,6 +1170,27 @@ impl CCodegen {
                     self.indent -= 1;
                     self.emit_indent();
                     writeln!(self.output, "}} }}").unwrap();
+                } else if let Some(Type::Array(elem, size)) =
+                    self.resolved_expr_type(iterable).map(|t| self.subst_active(&t))
+                {
+                    // Fixed-size array: iterate indices directly over the array.
+                    self.variable_types.insert(variable.clone(), *elem);
+                    self.emit_indent();
+                    write!(
+                        self.output,
+                        "{{ int64_t {}; for (int64_t _i = 0; _i < {}; _i++) {{ {} = ",
+                        variable, size, variable
+                    )
+                    .unwrap();
+                    self.emit_expression(iterable)?;
+                    write!(self.output, "[_i];").unwrap();
+                    self.indent += 1;
+                    for stmt in body {
+                        self.emit_statement(stmt)?;
+                    }
+                    self.indent -= 1;
+                    self.emit_indent();
+                    writeln!(self.output, "}} }}").unwrap();
                 } else {
                     let ty = self
                         .resolved_expr_type(iterable)
@@ -1219,7 +1234,6 @@ impl CCodegen {
     ) -> Result<String, String> {
         match expr {
             Expr::IntegerLiteral(value) => Ok(value.to_string()),
-            Expr::HexLiteral(value) => Ok(format!("0x{:x}", value)),
             Expr::FloatLiteral(value) => Ok(value.to_string()),
             Expr::BoolLiteral(value) => Ok(if *value { "1" } else { "0" }.to_string()),
             Expr::StringLiteral(value) => Ok(format!("\"{}\"", value)),
@@ -1265,9 +1279,6 @@ impl CCodegen {
         match expr {
             Expr::IntegerLiteral(value) => {
                 write!(self.output, "{}", value).unwrap();
-            }
-            Expr::HexLiteral(value) => {
-                write!(self.output, "0x{:x}", value).unwrap();
             }
             Expr::FloatLiteral(value) => {
                 write!(self.output, "{}", value).unwrap();
@@ -1893,7 +1904,7 @@ impl CCodegen {
                 self.emit_indent();
                 writeln!(self.output, "}})").unwrap();
             }
-            Expr::Range { start, end, inclusive } => {
+            Expr::Range { start, .. } => {
                 // Emit range as start value (range is only valid in for loops)
                 // This is a placeholder - actual range handling is in for loop codegen
                 self.emit_expression(start)?;
@@ -2105,8 +2116,7 @@ impl CCodegen {
             Expr::IntegerLiteral(_)
             | Expr::FloatLiteral(_)
             | Expr::StringLiteral(_)
-            | Expr::BoolLiteral(_)
-            | Expr::HexLiteral(_) => {}
+            | Expr::BoolLiteral(_) => {}
             Expr::Identifier(_) => {}
             Expr::BinaryOp { left, right, .. } => {
                 self.scan_expr(left, var_types, active_subst)?;
@@ -2257,7 +2267,6 @@ impl CCodegen {
             Expr::FloatLiteral(_) => Some(Type::Float64),
             Expr::StringLiteral(_) => Some(Type::String),
             Expr::BoolLiteral(_) => Some(Type::Bool),
-            Expr::HexLiteral(_) => Some(Type::Int64),
             Expr::Identifier(name) => var_types.get(name).cloned().map(|t| match t {
                 Type::Ref(inner) => *inner,
                 _ => t,
@@ -2546,7 +2555,7 @@ impl CCodegen {
     /// Returns an owned copy to avoid borrow conflicts with &self.
     fn resolved_expr_type(&self, expr: &Expr) -> Option<Type> {
         match expr {
-            Expr::IntegerLiteral(_) | Expr::HexLiteral(_) => Some(Type::Int64),
+            Expr::IntegerLiteral(_) => Some(Type::Int64),
             Expr::FloatLiteral(_) => Some(Type::Float64),
             Expr::StringLiteral(_) => Some(Type::String),
             Expr::BoolLiteral(_) => Some(Type::Bool),
