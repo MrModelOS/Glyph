@@ -101,6 +101,7 @@ pub enum Token {
 
     // Special
     Eof,
+    Pound,        // # (map literal prefix)
 }
 
 #[derive(Debug, Clone)]
@@ -465,12 +466,16 @@ impl Lexer {
                         // # prefixes
                         '#' => {
                             let ident = self.read_identifier();
-                            match ident.as_str() {
-                                "guard" => Token::Guard,
-                                "inject" => Token::Inject,
-                                "inline" => Token::Inline,
-                                "no_std" => Token::NoStd,
-                                _ => return Err(LexerError::UnexpectedChar('#', line, column)),
+                            if ident.is_empty() {
+                                Token::Pound
+                            } else {
+                                match ident.as_str() {
+                                    "guard" => Token::Guard,
+                                    "inject" => Token::Inject,
+                                    "inline" => Token::Inline,
+                                    "no_std" => Token::NoStd,
+                                    _ => return Err(LexerError::UnexpectedChar('#', line, column)),
+                                }
                             }
                         }
 

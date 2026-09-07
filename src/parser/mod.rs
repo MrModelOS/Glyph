@@ -1173,6 +1173,27 @@ impl Parser {
                 self.expect(&Token::RBracket)?;
                 Ok(Expr::ArrayLiteral(elements))
             }
+            Token::Pound => {
+                // Map literal: #{ "key": value, ... }
+                self.advance();
+                self.expect(&Token::LBrace)?;
+                let mut pairs = Vec::new();
+                if self.peek() != &Token::RBrace {
+                    loop {
+                        let key = self.parse_expression()?;
+                        self.expect(&Token::Colon)?;
+                        let value = self.parse_expression()?;
+                        pairs.push((key, value));
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Token::RBrace)?;
+                Ok(Expr::MapLiteral(pairs))
+            }
             Token::If => self.parse_if(),
             Token::Match => self.parse_match(),
             Token::TypeResult => self.parse_builtin_enum_constructor("Result"),

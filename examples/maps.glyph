@@ -1,0 +1,35 @@
+@fn main() -> Void {
+    let scores: Map<String, Int64> = #{ "alice": 90, "bob": 75 };
+    print_int(scores.len());
+
+    print_int(scores["alice"]);
+    print_int(scores["bob"]);
+
+    scores["carol"] = 60;
+    scores.put("bob", 80);
+    print_int(scores.len());
+    print_int(scores["bob"]);
+
+    let got: Option<Int64> = scores.get("carol");
+    let total: Int64 = match got {
+        | Some(v) => v
+        | None => 0
+    };
+    print_int(total);
+    drop(got);
+
+    let missing: Option<Int64> = scores.get("dave");
+    let fallback: Int64 = match missing {
+        | Some(v) => v
+        | None => -1
+    };
+    print_int(fallback);
+    drop(missing);
+
+    let strings: Map<String, String> = #{ "a": "hello", "b": "world" };
+    strings.put("c", "glyph");
+    print(strings["c"]);
+
+    scores.free();
+    strings.free();
+}

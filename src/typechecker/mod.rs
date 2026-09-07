@@ -41,6 +41,9 @@ pub enum TypeError {
     #[error("Array type mismatch: expected {expected}, found {found}")]
     ArrayTypeMismatch { expected: String, found: String },
 
+    #[error("Map value type mismatch: expected {expected}, found {found}")]
+    MappingValueMismatch { expected: String, found: String },
+
     #[error("Const type mismatch: expected {expected}, found {found}")]
     ConstTypeMismatch { expected: String, found: String },
 
@@ -981,6 +984,74 @@ impl TypeChecker {
                         }
                         _ => Err(TypeError::UndefinedFunction(format!("List.{}", method))),
                     },
+                    Type::Map(key_type, value_type) => match method.as_str() {
+                        "len" => {
+                            if args.is_empty() {
+                                Ok(Type::Int64)
+                            } else {
+                                Err(TypeError::WrongArgumentCount {
+                                    expected: 0,
+                                    found: args.len(),
+                                })
+                            }
+                        }
+                        "free" => {
+                            if args.is_empty() {
+                                Ok(Type::Void)
+                            } else {
+                                Err(TypeError::WrongArgumentCount {
+                                    expected: 0,
+                                    found: args.len(),
+                                })
+                            }
+                        }
+                        "put" => {
+                            if args.len() == 2 {
+                                let kt = self.check_expression(&args[0])?;
+                                if !self.types_compatible(key_type, &kt) {
+                                    return Err(TypeError::TypeMismatch {
+                                        expected: format!("{}", key_type),
+                                        found: format!("{}", kt),
+                                    });
+                                }
+                                let vt = self.check_expression(&args[1])?;
+                                if self.types_compatible(value_type, &vt) {
+                                    Ok(Type::Void)
+                                } else {
+                                    Err(TypeError::TypeMismatch {
+                                        expected: format!("{}", value_type),
+                                        found: format!("{}", vt),
+                                    })
+                                }
+                            } else {
+                                Err(TypeError::WrongArgumentCount {
+                                    expected: 2,
+                                    found: args.len(),
+                                })
+                            }
+                        }
+                        "get" => {
+                            if args.len() == 1 {
+                                let kt = self.check_expression(&args[0])?;
+                                if self.types_compatible(key_type, &kt) {
+                                    Ok(Type::Option(value_type.clone()))
+                                } else {
+                                    Err(TypeError::TypeMismatch {
+                                        expected: format!("{}", key_type),
+                                        found: format!("{}", kt),
+                                    })
+                                }
+                            } else {
+                                Err(TypeError::WrongArgumentCount {
+                                    expected: 1,
+                                    found: args.len(),
+                                })
+                            }
+                        }
+                        _ => {
+                            Err(TypeError::UndefinedFunction(format!("Map.{}", method)))
+                        }
+                    },
                     Type::Channel(elem_type) => match method.as_str() {
                         "send" => {
                             if args.len() == 1 {
@@ -1209,6 +1280,41 @@ impl TypeChecker {
                     }
                 }
                 Ok(Type::List(Box::new(first_type)))
+            }
+
+            Expr::MapLiteral(pairs) => {
+                if pairs.is_empty() {
+                    return Ok(Type::Map(
+                        Box::new(Type::String),
+                        Box::new(Type::Void),
+                    ));
+                }
+                let (first_key, first_value) = &pairs[0];
+                let key_type = self.check_expression(first_key)?;
+                if !matches!(key_type, Type::String) && !matches!(key_type, Type::Ref(_)) {
+                    return Err(TypeError::TypeMismatch {
+                        expected: "String".to_string(),
+                        found: format!("{}", key_type),
+                    });
+                }
+                let value_type = self.check_expression(first_value)?;
+                for (k, v) in &pairs[1..] {
+                    let kt = self.check_expression(k)?;
+                    if !self.types_compatible(&key_type, &kt) {
+                        return Err(TypeError::TypeMismatch {
+                            expected: format!("{}", key_type),
+                            found: format!("{}", kt),
+                        });
+                    }
+                    let vt = self.check_expression(v)?;
+                    if !self.types_compatible(&value_type, &vt) {
+                        return Err(TypeError::MappingValueMismatch {
+                            expected: format!("{}", value_type),
+                            found: format!("{}", vt),
+                        });
+                    }
+                }
+                Ok(Type::Map(Box::new(Type::String), Box::new(value_type)))
             }
 
             Expr::Match { expr, arms } => {
@@ -2042,7 +2148,7 @@ mod tests {
 
     #[test]
     fn test_type_check_for_map_rejected() {
-        // Map has no runtime backing; iterating over it must fail early.
+        // Iterating over a Map is not implemented; must fail early.
         let input = "\
 @fn f(m: Map<String, Int64>) -> Void {
     for k in m {
@@ -2060,6 +2166,46 @@ mod tests {
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(msg.contains("in function 'f'"));
+    }
+
+    #[test]
+    fn test_type_check_map_literal_and_methods() {
+        let input = "\
+@fn main() -> Void {
+    let m: Map<String, Int64> = #{ \"alice\": 90, \"bob\": 75 };
+    let n: Int64 = m.len();
+    m.put(\"carol\", 60);
+    let got: Option<Int64> = m.get(\"dave\");
+    m[\"carol\"] = 61;
+    drop(got);
+    m.free();
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_ok(), "{}", format!("{:?}", result));
+    }
+
+    #[test]
+    fn test_type_check_map_value_mismatch_rejected() {
+        let input = "\
+@fn main() -> Void {
+    let m: Map<String, Int64> = #{ \"a\": 1, \"b\": \"no\" };
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        let result = checker.check_program(&program);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("Map value type mismatch"));
     }
 
     #[test]

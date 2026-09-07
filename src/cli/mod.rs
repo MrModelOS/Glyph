@@ -454,8 +454,14 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
             remap_expr(end, self_names, prefix);
         }
         Expr::ArrayLiteral(elements) => {
-            for element in elements {
-                remap_expr(element, self_names, prefix);
+            for elem in elements {
+                remap_expr(elem, self_names, prefix);
+            }
+        }
+        Expr::MapLiteral(pairs) => {
+            for (k, v) in pairs {
+                remap_expr(k, self_names, prefix);
+                remap_expr(v, self_names, prefix);
             }
         }
         Expr::ChannelBounded { capacity, .. } => remap_expr(capacity, self_names, prefix),

@@ -201,6 +201,17 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
         Expr::ArrayLiteral(elems) => Expr::ArrayLiteral(
             elems.iter().map(|e| substitute_expr(subst, e)).collect(),
         ),
+        Expr::MapLiteral(pairs) => Expr::MapLiteral(
+            pairs
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        substitute_expr(subst, k),
+                        substitute_expr(subst, v),
+                    )
+                })
+                .collect(),
+        ),
         Expr::ChannelBounded { elem_type, capacity } => Expr::ChannelBounded {
             elem_type: Box::new(substitute_type(subst, elem_type)),
             capacity: Box::new(substitute_expr(subst, capacity)),

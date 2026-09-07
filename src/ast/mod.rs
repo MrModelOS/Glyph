@@ -151,6 +151,9 @@ pub enum Expr {
     // Array literal [1, 2, 3]
     ArrayLiteral(Vec<Expr>),
 
+    // Map literal: #{ "key": value, ... }
+    MapLiteral(Vec<(Expr, Expr)>),
+
     // Channel operations
     ChannelBounded {
         elem_type: Box<Type>,
