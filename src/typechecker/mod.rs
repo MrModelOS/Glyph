@@ -325,7 +325,7 @@ impl TypeChecker {
                             Some(other) => {
                                 return Err(TypeError::TestFunctionReturn {
                                     name: name.clone(),
-                                    found: format!("{:?}", other),
+                                    found: format!("{}", other),
                                 });
                             }
                         }
@@ -364,8 +364,8 @@ impl TypeChecker {
                     let value_type = self.check_expression(value)?;
                     if !self.types_compatible(ty, &value_type) {
                         return Err(TypeError::ConstTypeMismatch {
-                            expected: format!("{:?}", ty),
-                            found: format!("{:?}", value_type),
+                            expected: format!("{}", ty),
+                            found: format!("{}", value_type),
                         });
                     }
                     self.env.define_constant(name.clone(), ty.clone());
@@ -477,7 +477,7 @@ impl TypeChecker {
         if !self.types_compatible(&Type::String, &msg_type) {
             return Err(TypeError::TypeMismatch {
                 expected: "String".to_string(),
-                found: format!("{:?}", msg_type),
+                found: format!("{}", msg_type),
             });
         }
 
@@ -491,13 +491,13 @@ impl TypeChecker {
             if !supported {
                 return Err(TypeError::TypeMismatch {
                     expected: "Int64, UInt64, Float64, Bool or String".to_string(),
-                    found: format!("{:?}", a),
+                    found: format!("{}", a),
                 });
             }
             if !self.types_compatible(&a, &b) {
                 return Err(TypeError::TypeMismatch {
-                    expected: format!("{:?}", a),
-                    found: format!("{:?}", b),
+                    expected: format!("{}", a),
+                    found: format!("{}", b),
                 });
             }
         } else {
@@ -505,12 +505,33 @@ impl TypeChecker {
             if !self.types_compatible(&Type::Bool, &cond) {
                 return Err(TypeError::TypeMismatch {
                     expected: "Bool".to_string(),
-                    found: format!("{:?}", cond),
+                    found: format!("{}", cond),
                 });
             }
         }
 
         Ok(Type::Void)
+    }
+
+    /// drop(box): explicit deallocation of an Option/Result box. Only the box
+    /// and its cell are freed; pointer payloads stay owned by their allocation.
+    /// Using the value afterwards (or dropping twice) is undefined behavior,
+    /// same as std.mem `free`.
+    fn check_drop_call(&mut self, args: &[Expr]) -> Result<Type, TypeError> {
+        if args.len() != 1 {
+            return Err(TypeError::WrongArgumentCount {
+                expected: 1,
+                found: args.len(),
+            });
+        }
+        let arg_type = self.check_expression(&args[0])?;
+        match arg_type {
+            Type::Option(_) | Type::Result(_, _) => Ok(Type::Void),
+            _ => Err(TypeError::TypeMismatch {
+                expected: "Option<T> or Result<T, E>".to_string(),
+                found: arg_type.to_string(),
+            }),
+        }
     }
 
     fn check_block(
@@ -628,8 +649,8 @@ impl TypeChecker {
                 let stored = if let Some(expected) = ty {
                     if !self.types_compatible(expected, &value_type) {
                         return Err(TypeError::TypeMismatch {
-                            expected: format!("{:?}", expected),
-                            found: format!("{:?}", value_type),
+                            expected: format!("{}", expected),
+                            found: format!("{}", value_type),
                         });
                     }
                     // Prefer the declared type: it carries the concrete phantom
@@ -648,8 +669,8 @@ impl TypeChecker {
 
                 if !self.types_compatible(&target_type, &value_type) {
                     return Err(TypeError::TypeMismatch {
-                        expected: format!("{:?}", target_type),
-                        found: format!("{:?}", value_type),
+                        expected: format!("{}", target_type),
+                        found: format!("{}", value_type),
                     });
                 }
 
@@ -712,7 +733,7 @@ impl TypeChecker {
                     Type::Async(_) => Ok(None),
                     _ => Err(TypeError::TypeMismatch {
                         expected: "Async<T>".to_string(),
-                        found: format!("{:?}", ty),
+                        found: format!("{}", ty),
                     }),
                 }
             }
@@ -748,7 +769,7 @@ impl TypeChecker {
                             (Type::Int64, Type::Int64) => Ok(Type::Int64),
                             (Type::Float64, Type::Float64) => Ok(Type::Float64),
                             (Type::UInt64, Type::UInt64) => Ok(Type::UInt64),
-                            _ => Err(TypeError::CannotApplyOperator(format!("{:?}", op))),
+                            _ => Err(TypeError::CannotApplyOperator(format!("{}", op))),
                         }
                     }
                     BinOp::Concat => {
@@ -767,8 +788,8 @@ impl TypeChecker {
                                     Ok(Type::List(a.clone()))
                                 } else {
                                     Err(TypeError::TypeMismatch {
-                                        expected: format!("{:?}", a),
-                                        found: format!("{:?}", b),
+                                        expected: format!("{}", a),
+                                        found: format!("{}", b),
                                     })
                                 }
                             }
@@ -780,8 +801,8 @@ impl TypeChecker {
                             Ok(Type::Bool)
                         } else {
                             Err(TypeError::TypeMismatch {
-                                expected: format!("{:?}", left_type),
-                                found: format!("{:?}", right_type),
+                                expected: format!("{}", left_type),
+                                found: format!("{}", right_type),
                             })
                         }
                     }
@@ -791,14 +812,14 @@ impl TypeChecker {
                             (Type::Float64, Type::Float64) => Ok(Type::Bool),
                             (Type::UInt64, Type::UInt64) => Ok(Type::Bool),
                             (Type::String, Type::String) => Ok(Type::Bool),
-                            _ => Err(TypeError::CannotApplyOperator(format!("{:?}", op))),
+                            _ => Err(TypeError::CannotApplyOperator(format!("{}", op))),
                         }
                     }
                     BinOp::And | BinOp::Or => {
                         if matches!(left_type, Type::Bool) && matches!(right_type, Type::Bool) {
                             Ok(Type::Bool)
                         } else {
-                            Err(TypeError::CannotApplyOperator(format!("{:?}", op)))
+                            Err(TypeError::CannotApplyOperator(format!("{}", op)))
                         }
                     }
                 }
@@ -844,8 +865,8 @@ impl TypeChecker {
                     | (Type::String, Type::Float64)
                     | (Type::Float64, Type::String) => Ok(target_type.clone()),
                     _ => Err(TypeError::InvalidCast {
-                        from: format!("{:?}", source_type),
-                        to: format!("{:?}", target_type),
+                        from: format!("{}", source_type),
+                        to: format!("{}", target_type),
                     }),
                 }
             }
@@ -862,6 +883,11 @@ impl TypeChecker {
                 // Polymorphic assert builtins (work on Int64/UInt64/Float64/Bool/String)
                 if Self::is_polymorphic_assert(&func_name) {
                     return self.check_assert_builtin_call(&func_name, args);
+                }
+
+                // drop(box): explicit deallocation of an Option/Result box.
+                if func_name == "drop" {
+                    return self.check_drop_call(args);
                 }
 
                 // Generic function call: infer type arguments and check the instantiation
@@ -886,8 +912,8 @@ impl TypeChecker {
                     let arg_type = self.check_expression(arg)?;
                     if !self.types_compatible(param_type, &arg_type) {
                         return Err(TypeError::TypeMismatch {
-                            expected: format!("{:?}", param_type),
-                            found: format!("{:?}", arg_type),
+                            expected: format!("{}", param_type),
+                            found: format!("{}", arg_type),
                         });
                     }
                 }
@@ -911,12 +937,12 @@ impl TypeChecker {
 
                 match &object_type {
                     Type::String => match method.as_str() {
-                        "len" => Ok(Type::UInt64),
+                        "len" => Ok(Type::Int64),
                         "to_uint" => Ok(Type::Option(Box::new(Type::UInt64))),
                         _ => Err(TypeError::UndefinedFunction(format!("String.{}", method))),
                     },
                     Type::List(elem_type) => match method.as_str() {
-                        "len" => Ok(Type::UInt64),
+                        "len" => Ok(Type::Int64),
                         "iter" => Ok(Type::Async(elem_type.clone())),
                         "append" => {
                             if args.len() == 1 {
@@ -925,8 +951,8 @@ impl TypeChecker {
                                     Ok(Type::Void)
                                 } else {
                                     Err(TypeError::TypeMismatch {
-                                        expected: format!("{:?}", elem_type),
-                                        found: format!("{:?}", arg_type),
+                                        expected: format!("{}", elem_type),
+                                        found: format!("{}", arg_type),
                                     })
                                 }
                             } else {
@@ -942,13 +968,20 @@ impl TypeChecker {
                         "send" => {
                             if args.len() == 1 {
                                 let arg_type = self.check_expression(&args[0])?;
+                                // Stack addresses must not cross threads.
+                                if matches!(arg_type, Type::Ref(_)) {
+                                    return Err(TypeError::TypeMismatch {
+                                        expected: "owned value".to_string(),
+                                        found: arg_type.to_string(),
+                                    });
+                                }
                                 if self.types_compatible(elem_type, &arg_type) {
                                     // true = queued, false = channel closed
                                     Ok(Type::Bool)
                                 } else {
                                     Err(TypeError::TypeMismatch {
-                                        expected: format!("{:?}", elem_type),
-                                        found: format!("{:?}", arg_type),
+                                        expected: format!("{}", elem_type),
+                                        found: format!("{}", arg_type),
                                     })
                                 }
                             } else {
@@ -1003,8 +1036,8 @@ impl TypeChecker {
                             };
                             if !self.types_compatible(receiver_check, object_check) {
                                 return Err(TypeError::TypeMismatch {
-                                    expected: format!("{:?}", receiver_ty),
-                                    found: format!("{:?}", object_type),
+                                    expected: format!("{}", receiver_ty),
+                                    found: format!("{}", object_type),
                                 });
                             }
                             if args.len() != sig.params.len() - 1 {
@@ -1017,8 +1050,8 @@ impl TypeChecker {
                                 let arg_type = self.check_expression(arg)?;
                                 if !self.types_compatible(param_type, &arg_type) {
                                     return Err(TypeError::TypeMismatch {
-                                        expected: format!("{:?}", param_type),
-                                        found: format!("{:?}", arg_type),
+                                        expected: format!("{}", param_type),
+                                        found: format!("{}", arg_type),
                                     });
                                 }
                             }
@@ -1032,7 +1065,7 @@ impl TypeChecker {
                             Err(TypeError::UndefinedFunction(format!("{}.{}", type_name, method)))
                         }
                     }
-                    _ => Err(TypeError::CannotCallNonFunction(format!("{:?}", object_type))),
+                    _ => Err(TypeError::CannotCallNonFunction(format!("{}", object_type))),
                 }
             }
 
@@ -1086,7 +1119,7 @@ impl TypeChecker {
                         } else {
                             Err(TypeError::TypeMismatch {
                                 expected: "UInt64 or Int64".to_string(),
-                                found: format!("{:?}", index_type),
+                                found: format!("{}", index_type),
                             })
                         }
                     }
@@ -1095,8 +1128,8 @@ impl TypeChecker {
                             Ok((**value_type).clone())
                         } else {
                             Err(TypeError::TypeMismatch {
-                                expected: format!("{:?}", key_type),
-                                found: format!("{:?}", index_type),
+                                expected: format!("{}", key_type),
+                                found: format!("{}", index_type),
                             })
                         }
                     }
@@ -1106,7 +1139,7 @@ impl TypeChecker {
                         } else {
                             Err(TypeError::TypeMismatch {
                                 expected: "UInt64 or Int64".to_string(),
-                                found: format!("{:?}", index_type),
+                                found: format!("{}", index_type),
                             })
                         }
                     }
@@ -1121,8 +1154,8 @@ impl TypeChecker {
                     Ok(Type::List(Box::new(start_type)))
                 } else {
                     Err(TypeError::TypeMismatch {
-                        expected: format!("{:?}", start_type),
-                        found: format!("{:?}", end_type),
+                        expected: format!("{}", start_type),
+                        found: format!("{}", end_type),
                     })
                 }
             }
@@ -1136,8 +1169,8 @@ impl TypeChecker {
                     let elem_type = self.check_expression(elem)?;
                     if !self.types_compatible(&first_type, &elem_type) {
                         return Err(TypeError::ArrayTypeMismatch {
-                            expected: format!("{:?}", first_type),
-                            found: format!("{:?}", elem_type),
+                            expected: format!("{}", first_type),
+                            found: format!("{}", elem_type),
                         });
                     }
                 }
@@ -1175,8 +1208,8 @@ impl TypeChecker {
                         if !matches!(prev, Type::Void) && !matches!(body_ty, Type::Void) {
                             if !self.types_compatible(prev, &body_ty) {
                                 return Err(TypeError::TypeMismatch {
-                                    expected: format!("{:?}", prev),
-                                    found: format!("{:?}", body_ty),
+                                    expected: format!("{}", prev),
+                                    found: format!("{}", body_ty),
                                 });
                             }
                         }
@@ -1195,7 +1228,7 @@ impl TypeChecker {
                 if !matches!(cond_type, Type::Bool) {
                     return Err(TypeError::TypeMismatch {
                         expected: "Bool".to_string(),
-                        found: format!("{:?}", cond_type),
+                        found: format!("{}", cond_type),
                     });
                 }
 
@@ -1239,7 +1272,7 @@ impl TypeChecker {
                 if !matches!(cap_type, Type::UInt64 | Type::Int64) {
                     return Err(TypeError::TypeMismatch {
                         expected: "UInt64 or Int64".to_string(),
-                        found: format!("{:?}", cap_type),
+                        found: format!("{}", cap_type),
                     });
                 }
                 Ok(Type::Channel(elem_type.clone()))
@@ -1266,8 +1299,8 @@ impl TypeChecker {
 
                             if !self.types_compatible(expected_type, &field_type) {
                                 return Err(TypeError::TypeMismatch {
-                                    expected: format!("{:?}", expected_type),
-                                    found: format!("{:?}", field_type),
+                                    expected: format!("{}", expected_type),
+                                    found: format!("{}", field_type),
                                 });
                             }
                         }
@@ -1275,7 +1308,7 @@ impl TypeChecker {
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: "Struct type".to_string(),
-                        found: format!("{:?}", name),
+                        found: format!("{}", name),
                     }),
                 }
             }
@@ -1368,8 +1401,8 @@ impl TypeChecker {
                                 let arg_type = self.check_expression(arg)?;
                                 if !self.types_compatible(expected_type, &arg_type) {
                                     return Err(TypeError::TypeMismatch {
-                                        expected: format!("{:?}", expected_type),
-                                        found: format!("{:?}", arg_type),
+                                        expected: format!("{}", expected_type),
+                                        found: format!("{}", arg_type),
                                     });
                                 }
                             }
@@ -1379,7 +1412,7 @@ impl TypeChecker {
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: "Enum type".to_string(),
-                        found: format!("{:?}", enum_name),
+                        found: format!("{}", enum_name),
                     }),
                 }
             }
@@ -1390,7 +1423,7 @@ impl TypeChecker {
                     Type::Async(inner) => Ok(*inner),
                     _ => Err(TypeError::TypeMismatch {
                         expected: "Async<T>".to_string(),
-                        found: format!("{:?}", expr_type),
+                        found: format!("{}", expr_type),
                     }),
                 }
             }
@@ -1410,7 +1443,7 @@ impl TypeChecker {
                 } else {
                     Err(TypeError::TypeMismatch {
                         expected: "Int64 or UInt64".to_string(),
-                        found: format!("{:?}", expected_type),
+                        found: format!("{}", expected_type),
                     })
                 }
             }
@@ -1420,7 +1453,7 @@ impl TypeChecker {
                 } else {
                     Err(TypeError::TypeMismatch {
                         expected: "String".to_string(),
-                        found: format!("{:?}", expected_type),
+                        found: format!("{}", expected_type),
                     })
                 }
             }
@@ -1430,7 +1463,7 @@ impl TypeChecker {
                 } else {
                     Err(TypeError::TypeMismatch {
                         expected: "Bool".to_string(),
-                        found: format!("{:?}", expected_type),
+                        found: format!("{}", expected_type),
                     })
                 }
             }
@@ -1533,7 +1566,7 @@ impl TypeChecker {
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: "Enum type".to_string(),
-                        found: format!("{:?}", expected_type),
+                        found: format!("{}", expected_type),
                     }),
                 }
             }
@@ -1550,7 +1583,9 @@ impl TypeChecker {
             (Type::Bool, Type::Bool) => true,
             (Type::Void, Type::Void) => true,
             (Type::Bytes, Type::Bytes) => true,
-            (Type::List(a), Type::List(b)) => self.types_compatible(a, b),
+            (Type::List(a), Type::List(b)) => {
+                self.is_unknown(a) || self.is_unknown(b) || self.types_compatible(a, b)
+            }
             (Type::Map(k1, v1), Type::Map(k2, v2)) => {
                 self.types_compatible(k1, k2) && self.types_compatible(v1, v2)
             }
@@ -1941,6 +1976,83 @@ mod tests {
 @fn main() -> Void {
     let a: Int64 = wrap(1) await;
     print_int(a);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+        #[test]
+    fn test_type_check_list_dynamic_ops() {
+        let input = "\
+@fn sum_all(xs: List<Int64>) -> Int64 {
+    let total: Int64 = 0;
+    for x in xs {
+        total = total + x;
+    }
+    return total;
+}
+@fn main() -> Void {
+    let dyn: List<Int64> = [1, 2, 3];
+    let n: Int64 = dyn.len();
+    dyn.append(4);
+    let doubled: List<Int64> = dyn ++ dyn;
+    let r: List<Int64> = 0..10;
+    print_int(n);
+    print_int(sum_all(doubled));
+    print_int(r.len());
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_drop() {
+        let input = "\
+@fn main() -> Void {
+    let m: Option<Int64> = parse_int(\"42\");
+    drop(m);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_drop_non_box() {
+        let input = "\
+@fn main() -> Void {
+    drop(42);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_channel_send_ref_rejected() {
+        let input = "\
+@fn main() -> Void {
+    let ch: Channel<Int64> = Channel<Int64>(4);
+    let x: Int64 = 5;
+    ch.send(&x);
 }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize().unwrap();

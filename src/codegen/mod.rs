@@ -18,6 +18,18 @@ pub enum CodegenError {
 
     #[error("Cannot generate code for expression")]
     CannotGenerateExpression,
+
+    #[error("Cannot resolve type of method receiver for '{method}'")]
+    UnresolvedMethod { method: String },
+
+    #[error("Cannot iterate over type '{ty}'")]
+    InvalidIterable { ty: String },
+
+    #[error("Codegen error while scanning '{name}': {msg}")]
+    ScanError { name: String, msg: String },
+
+    #[error("Codegen error for const '{name}': {msg}")]
+    ConstError { name: String, msg: String },
 }
 
 pub struct CCodegen {
@@ -32,6 +44,44 @@ pub struct CCodegen {
     generic_fns: HashMap<String, GenericFnInfo>,
     generic_instances: HashMap<String, (String, HashMap<String, Type>)>,
     active_substitution: HashMap<String, Type>,
+}
+
+/// Bind the variables of a match pattern against the scrutinee type.
+/// Returns false when the pattern is too exotic for best-effort inference.
+fn bind_match_pattern(pattern: &Pattern, scrut: &Type, vars: &mut HashMap<String, Type>) -> bool {
+    let scrut = match scrut {
+        Type::Ref(inner) => inner.as_ref(),
+        other => other,
+    };
+    match pattern {
+        Pattern::Identifier(name) => {
+            vars.insert(name.clone(), scrut.clone());
+            true
+        }
+        Pattern::Wildcard => true,
+        Pattern::IntegerLiteral(_)
+        | Pattern::StringLiteral(_)
+        | Pattern::BoolLiteral(_) => true,
+        Pattern::EnumVariant { variant, data, .. } => {
+            let payload: Option<Type> = match (scrut, variant.as_str()) {
+                (Type::Option(inner), "Some") => Some((**inner).clone()),
+                (Type::Result(ok, _), "Ok") => Some((**ok).clone()),
+                (Type::Result(_, err), "Err") => Some((**err).clone()),
+                (Type::Option(_), "None") => None,
+                _ => return false,
+            };
+            match (data, payload) {
+                (None, _) => true,
+                (Some(patterns), Some(ty)) => {
+                    if patterns.len() != 1 {
+                        return false;
+                    }
+                    bind_match_pattern(&patterns[0], &ty, vars)
+                }
+                (Some(_), None) => false,
+            }
+        }
+    }
 }
 
 impl CCodegen {
@@ -113,6 +163,8 @@ impl CCodegen {
         writeln!(self.output, "void* glyph_box_construct(int64_t tag, const void* data, int64_t size);").unwrap();
         writeln!(self.output, "void* glyph_parse_int(const char* s);").unwrap();
         writeln!(self.output, "void* glyph_parse_float(const char* s);").unwrap();
+        writeln!(self.output, "void glyph_box_free(void* box_ptr);").unwrap();
+        writeln!(self.output, "static void glyph_box_free_cleanup(GlyphBox** b);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Concurrency (pthreads)").unwrap();
@@ -123,6 +175,14 @@ impl CCodegen {
         writeln!(self.output, "int glyph_channel_send(void* channel, void* payload);").unwrap();
         writeln!(self.output, "void* glyph_channel_recv(void* channel);").unwrap();
         writeln!(self.output, "void glyph_channel_close(void* channel);").unwrap();
+        writeln!(self.output, "").unwrap();
+
+        writeln!(self.output, "// Lists (fat struct over a heap buffer)").unwrap();
+        writeln!(self.output, "typedef struct {{ void* data; int64_t len; int64_t elem_size; }} GlyphList;").unwrap();
+        writeln!(self.output, "GlyphList glyph_list_new(int64_t elem_size, int64_t len);").unwrap();
+        writeln!(self.output, "void glyph_list_append(GlyphList* list, const void* value);").unwrap();
+        writeln!(self.output, "GlyphList glyph_list_concat(GlyphList a, GlyphList b);").unwrap();
+        writeln!(self.output, "GlyphList glyph_range_i64(int64_t start, int64_t end, int inclusive);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Math").unwrap();
@@ -296,8 +356,10 @@ impl CCodegen {
                     var_types.insert(p.name.clone(), p.ty.clone());
                 }
                 if let Err(e) = self.scan_body_for_generic_calls(name, body, &mut var_types, &HashMap::new()) {
-                    eprintln!("Codegen error while scanning '{}': {}", name, e);
-                    std::process::exit(1);
+                    return Err(CodegenError::ScanError {
+                        name: name.clone(),
+                        msg: e,
+                    });
                 }
             }
         }
@@ -323,8 +385,10 @@ impl CCodegen {
             let c = match self.const_expr_to_c(value, &mut std::collections::HashSet::new()) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("Codegen error for const '{}': {}", name, e);
-                    std::process::exit(1);
+                    return Err(CodegenError::ConstError {
+                        name: name.clone(),
+                        msg: e,
+                    });
                 }
             };
             writeln!(self.output, "static const {} {} = {};", self.type_to_c(ty), name, c).unwrap();
@@ -890,6 +954,50 @@ impl CCodegen {
         Ok(())
     }
 
+    /// Infer the element type of a list literal from its first element.
+    /// Falls back to Int64 (matches the historic hardcoded behavior).
+    fn infer_list_elem(&self, elems: &[Expr]) -> Type {
+        let inferred = elems
+            .first()
+            .and_then(|e| self.concrete_type_of(e, &self.variable_types));
+        match inferred {
+            Some(t) => self.subst_active(&t),
+            None => Type::Int64,
+        }
+    }
+
+    /// Emit `[e0, e1, ...]` as a heap-allocated `GlyphList` of `elem_ty`.
+    fn emit_list_literal(&mut self, elems: &[Expr], elem_ty: &Type) -> Result<(), CodegenError> {
+        let c_elem = self.type_to_c(elem_ty);
+        write!(
+            self.output,
+            "({{ GlyphList _l = glyph_list_new(sizeof({}), {}); ",
+            c_elem,
+            elems.len()
+        )
+        .unwrap();
+        if !elems.is_empty() {
+            write!(self.output, "{}* _d = ({}*)_l.data; ", c_elem, c_elem).unwrap();
+            for (i, e) in elems.iter().enumerate() {
+                write!(self.output, "_d[{}] = ", i).unwrap();
+                self.emit_expression(e)?;
+                write!(self.output, "; ").unwrap();
+            }
+        }
+        write!(self.output, "_l; }})").unwrap();
+        Ok(())
+    }
+
+    /// Resolve the element type when `expr` is statically a `List<T>`.
+    fn resolved_list_elem(&self, expr: &Expr) -> Option<Type> {
+        self.resolved_expr_type(expr)
+            .map(|t| self.subst_active(&t))
+            .and_then(|t| match t {
+                Type::List(inner) => Some(*inner),
+                _ => None,
+            })
+    }
+
     fn emit_statement(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
         match stmt {
             Stmt::Let {
@@ -900,30 +1008,35 @@ impl CCodegen {
             } => {
                 // Substitute generic type parameters for the current instance
                 let concrete_ty = ty.as_ref().map(|t| self.subst_active(t));
+                // Untyped `let` infers the type from the value when possible
+                // (a bare `auto` is not valid C).
+                let inferred_ty: Option<Type> = match &concrete_ty {
+                    Some(t) => Some(t.clone()),
+                    None => self
+                        .concrete_type_of(value, &self.variable_types)
+                        .map(|t| self.subst_active(&t)),
+                };
                 // Track variable type for match codegen reference detection
-                if let Some(t) = &concrete_ty {
+                if let Some(t) = &inferred_ty {
                     self.variable_types.insert(name.clone(), t.clone());
                 }
                 self.emit_indent();
-                let ty_str = match &concrete_ty {
-                    Some(Type::List(elem)) => {
-                        format!("{}*", self.type_to_c(elem))
-                    }
+                let ty_str = match &inferred_ty {
+                    Some(Type::List(_)) => "GlyphList".to_string(),
                     Some(t) => self.type_to_c(t),
-                    None => "auto".to_string(),
+                    None => "__auto_type".to_string(),
                 };
                 write!(self.output, "{} {} = ", ty_str, name).unwrap();
-                match (&concrete_ty, value) {
+                match (&inferred_ty, value) {
                     (Some(Type::List(elem)), Expr::ArrayLiteral(elements)) => {
-                        // Typed list literal: (T[]){ ... } with T = element type
-                        write!(self.output, "({}[]){{", self.type_to_c(elem)).unwrap();
-                        for (i, e) in elements.iter().enumerate() {
-                            if i > 0 {
-                                write!(self.output, ", ").unwrap();
-                            }
-                            self.emit_expression(e)?;
-                        }
-                        write!(self.output, "}}").unwrap();
+                        self.emit_list_literal(elements, elem)?;
+                    }
+                    (Some(Type::List(_)), Expr::Range { start, end, inclusive }) => {
+                        write!(self.output, "glyph_range_i64(").unwrap();
+                        self.emit_expression(start)?;
+                        write!(self.output, ", ").unwrap();
+                        self.emit_expression(end)?;
+                        write!(self.output, ", {})", if *inclusive { "1" } else { "0" }).unwrap();
                     }
                     (Some(declared), Expr::FunctionCall { name, args }) => {
                         // Resolve with the declared type as expected return so
@@ -1039,19 +1152,34 @@ impl CCodegen {
                     self.indent -= 1;
                     self.emit_indent();
                     writeln!(self.output, "}} }}").unwrap();
-                } else {
-                    // Fallback for non-range iterables
+                } else if let Some(elem) = self.resolved_list_elem(iterable) {
+                    // Real iteration over a GlyphList: length and buffer are
+                    // re-read every step, so appends inside the body are seen.
+                    let c_elem = self.type_to_c(&elem);
+                    self.variable_types.insert(variable.clone(), elem);
                     self.emit_indent();
-                    write!(self.output, "/* for {} in */ for (int _i = 0; _i < 10; _i++) {{", variable).unwrap();
+                    write!(self.output, "{{ GlyphList _it = ").unwrap();
+                    self.emit_expression(iterable)?;
+                    write!(
+                        self.output,
+                        "; for (int64_t _i = 0; _i < _it.len; _i++) {{ {} {} = (({}*)_it.data)[_i];",
+                        c_elem, variable, c_elem
+                    )
+                    .unwrap();
                     self.indent += 1;
-                    self.emit_indent();
-                    writeln!(self.output, "{} = _i;", variable).unwrap();
                     for stmt in body {
                         self.emit_statement(stmt)?;
                     }
                     self.indent -= 1;
                     self.emit_indent();
-                    writeln!(self.output, "}}").unwrap();
+                    writeln!(self.output, "}} }}").unwrap();
+                } else {
+                    let ty = self
+                        .resolved_expr_type(iterable)
+                        .map(|t| self.subst_active(&t))
+                        .map(|t| format!("{}", t))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    return Err(CodegenError::InvalidIterable { ty });
                 }
             }
             Stmt::Guard { condition, else_body } => {
@@ -1154,11 +1282,55 @@ impl CCodegen {
             }
             Expr::BinaryOp { op, left, right } => {
                 if matches!(op, BinOp::Concat) {
-                    // String concatenation - convert non-string types to strings
-                    write!(self.output, "glyph_concat_strings(").unwrap();
-                    self.emit_to_string(left)?;
-                    write!(self.output, ", ").unwrap();
-                    self.emit_to_string(right)?;
+                    // List concatenation goes through the list runtime;
+                    // everything else is string concatenation.
+                    let is_list_concat = self.resolved_list_elem(left).is_some()
+                        && self.resolved_list_elem(right).is_some();
+                    if is_list_concat {
+                        write!(self.output, "glyph_list_concat(").unwrap();
+                        self.emit_expression(left)?;
+                        write!(self.output, ", ").unwrap();
+                        self.emit_expression(right)?;
+                        write!(self.output, ")").unwrap();
+                    } else {
+                        // String concatenation - convert non-string types to strings
+                        write!(self.output, "glyph_concat_strings(").unwrap();
+                        self.emit_to_string(left)?;
+                        write!(self.output, ", ").unwrap();
+                        self.emit_to_string(right)?;
+                        write!(self.output, ")").unwrap();
+                    }
+                } else if matches!(op, BinOp::Eq | BinOp::Neq) {
+                    // C equality only works on scalars and pointers; anything
+                    // else (structs, lists) is rejected loudly.
+                    let comparable = |t: Option<Type>| {
+                        matches!(
+                            t,
+                            Some(
+                                Type::String
+                                    | Type::Bytes
+                                    | Type::Int64
+                                    | Type::UInt64
+                                    | Type::Float64
+                                    | Type::Bool
+                            )
+                        )
+                    };
+                    let lt = self
+                        .resolved_expr_type(left)
+                        .map(|t| self.subst_active(&t));
+                    let rt = self
+                        .resolved_expr_type(right)
+                        .map(|t| self.subst_active(&t));
+                    // Unknown types keep the old behavior (best effort).
+                    if lt.is_some() && rt.is_some() && !(comparable(lt) && comparable(rt)) {
+                        return Err(CodegenError::CannotGenerateExpression);
+                    }
+                    write!(self.output, "(").unwrap();
+                    self.emit_expression(left)?;
+                    let op_str = self.binop_to_c(op).to_string();
+                    write!(self.output, " {} ", op_str).unwrap();
+                    self.emit_expression(right)?;
                     write!(self.output, ")").unwrap();
                 } else {
                     write!(self.output, "(").unwrap();
@@ -1203,6 +1375,13 @@ impl CCodegen {
                 };
                 if let Some(cname) = resolved_name {
                     write!(self.output, "{}", cname).unwrap();
+                } else if let Expr::Identifier(n) = name.as_ref() {
+                    // Unknown callee: fail loudly instead of emitting garbage.
+                    // (Unreachable after typechecking; guards --no-typecheck.)
+                    if self.generic_fns.contains_key(n) {
+                        return Err(CodegenError::CannotGenerateExpression);
+                    }
+                    return Err(CodegenError::FunctionNotFound(n.clone()));
                 } else {
                     self.emit_expression(name)?;
                 }
@@ -1220,11 +1399,57 @@ impl CCodegen {
                 method,
                 args,
             } => {
+                // Custom-type methods dispatch first, even when named like a
+                // builtin (user methods named `len`/`append` are not shadowed).
+                if let Some(type_name) = self.resolved_custom_type_name(object) {
+                    let full_name = format!("{}_{}", type_name, method);
+                    // Async method: build a lazy handle instead of calling.
+                    if let Some(sig) = self.functions.get(&full_name).cloned() {
+                        if sig.is_async {
+                            let cparams: Vec<(String, Type)> = sig
+                                .params
+                                .iter()
+                                .map(|(nm, ty, _)| (nm.clone(), self.subst_active(ty)))
+                                .collect();
+                            let mut all_args: Vec<Expr> = Vec::with_capacity(args.len() + 1);
+                            all_args.push((**object).clone());
+                            all_args.extend(args.iter().cloned());
+                            self.emit_async_call(&full_name, &cparams, &all_args)?;
+                            return Ok(());
+                        }
+                    }
+                    // Method on a custom type: Type_method(receiver, args...)
+                    write!(self.output, "{}(", full_name).unwrap();
+                    self.emit_expression(object)?;
+                    for arg in args {
+                        write!(self.output, ", ").unwrap();
+                        self.emit_expression(arg)?;
+                    }
+                    write!(self.output, ")").unwrap();
+                    return Ok(());
+                }
                 match method.as_str() {
                     "len" => {
-                        write!(self.output, "strlen(").unwrap();
-                        self.emit_expression(object)?;
-                        write!(self.output, ")").unwrap();
+                        let obj_ty = self
+                            .resolved_expr_type(object)
+                            .map(|t| self.subst_active(&t));
+                        match obj_ty {
+                            Some(Type::List(_)) => {
+                                write!(self.output, "(").unwrap();
+                                self.emit_expression(object)?;
+                                write!(self.output, ").len").unwrap();
+                            }
+                            Some(Type::String) | None => {
+                                write!(self.output, "strlen(").unwrap();
+                                self.emit_expression(object)?;
+                                write!(self.output, ")").unwrap();
+                            }
+                            Some(other) => {
+                                return Err(CodegenError::UnresolvedMethod {
+                                    method: format!("len on {}", self.type_to_c(&other)),
+                                });
+                            }
+                        }
                     }
                     "to_uint" => {
                         write!(self.output, "atoll(").unwrap();
@@ -1232,8 +1457,22 @@ impl CCodegen {
                         write!(self.output, ")").unwrap();
                     }
                     "append" => {
-                        write!(self.output, "/* append */ ").unwrap();
-                        self.emit_expression(object)?;
+                        let elem = self.resolved_list_elem(object);
+                        match (elem, args.first()) {
+                            (Some(e), Some(v)) => {
+                                let c_elem = self.type_to_c(&e);
+                                write!(self.output, "({{ {} _t = ", c_elem).unwrap();
+                                self.emit_expression(v)?;
+                                write!(self.output, "; glyph_list_append(&(").unwrap();
+                                self.emit_expression(object)?;
+                                write!(self.output, "), &_t); }})").unwrap();
+                            }
+                            _ => {
+                                return Err(CodegenError::UnresolvedMethod {
+                                    method: "append".to_string(),
+                                });
+                            }
+                        }
                     }
                     "send" => {
                         let elem = self
@@ -1301,41 +1540,9 @@ impl CCodegen {
                         write!(self.output, ")").unwrap();
                     }
                     _ => {
-                        match self.resolved_custom_type_name(object) {
-                            Some(type_name) => {
-                                let full_name = format!("{}_{}", type_name, method);
-                                // Async method: build a lazy handle instead of calling.
-                                if let Some(sig) = self.functions.get(&full_name).cloned() {
-                                    if sig.is_async {
-                                        let cparams: Vec<(String, Type)> = sig
-                                            .params
-                                            .iter()
-                                            .map(|(nm, ty, _)| (nm.clone(), self.subst_active(ty)))
-                                            .collect();
-                                        let mut all_args: Vec<Expr> = Vec::with_capacity(args.len() + 1);
-                                        all_args.push((**object).clone());
-                                        all_args.extend(args.iter().cloned());
-                                        self.emit_async_call(&full_name, &cparams, &all_args)?;
-                                        return Ok(());
-                                    }
-                                }
-                                // Method on a custom type: Type_method(receiver, args...)
-                                write!(self.output, "{}(", full_name).unwrap();
-                                self.emit_expression(object)?;
-                                for arg in args {
-                                    write!(self.output, ", ").unwrap();
-                                    self.emit_expression(arg)?;
-                                }
-                                write!(self.output, ")").unwrap();
-                            }
-                            None => {
-                                eprintln!(
-                                    "Codegen error: cannot resolve type of method receiver for '{}'",
-                                    method
-                                );
-                                std::process::exit(1);
-                            }
-                        }
+                        return Err(CodegenError::UnresolvedMethod {
+                            method: method.clone(),
+                        });
                     }
                 }
             }
@@ -1344,10 +1551,27 @@ impl CCodegen {
                 write!(self.output, ".{}", field).unwrap();
             }
             Expr::IndexAccess { object, index } => {
-                self.emit_expression(object)?;
-                write!(self.output, "[").unwrap();
-                self.emit_expression(index)?;
-                write!(self.output, "]").unwrap();
+                match self.resolved_list_elem(object) {
+                    Some(elem) => {
+                        // GlyphList indexing through the heap buffer.
+                        // An explicit `&xs` reference exposes the same buffer.
+                        let target = match object.as_ref() {
+                            Expr::Ref(inner) => inner.as_ref(),
+                            _ => object.as_ref(),
+                        };
+                        write!(self.output, "(({}*)((", self.type_to_c(&elem)).unwrap();
+                        self.emit_expression(target)?;
+                        write!(self.output, ").data))[").unwrap();
+                        self.emit_expression(index)?;
+                        write!(self.output, "]").unwrap();
+                    }
+                    None => {
+                        self.emit_expression(object)?;
+                        write!(self.output, "[").unwrap();
+                        self.emit_expression(index)?;
+                        write!(self.output, "]").unwrap();
+                    }
+                }
             }
             Expr::StructInit { name, fields } => {
                 write!(self.output, "({}){{", name).unwrap();
@@ -1406,7 +1630,19 @@ impl CCodegen {
                     self.indent += 1;
 
                     self.emit_indent();
-                    write!(self.output, "GlyphBox* _match_val_box = (GlyphBox*)(").unwrap();
+                    // A freshly created box (call, constructor, ...) is owned
+                    // by this match and freed on scope exit via cleanup, which
+                    // also runs on `return`/`break` out of an arm. Named
+                    // variables and struct fields may alias elsewhere: theirs.
+                    let owned = !matches!(
+                        expr.as_ref(),
+                        Expr::Identifier(_) | Expr::FieldAccess { .. }
+                    );
+                    if owned {
+                        write!(self.output, "GlyphBox* _match_val_box __attribute__((cleanup(glyph_box_free_cleanup))) = (GlyphBox*)(").unwrap();
+                    } else {
+                        write!(self.output, "GlyphBox* _match_val_box = (GlyphBox*)(").unwrap();
+                    }
                     self.emit_expression(expr)?;
                     writeln!(self.output, ");").unwrap();
 
@@ -1605,15 +1841,10 @@ impl CCodegen {
                 self.emit_expression(start)?;
             }
             Expr::ArrayLiteral(elements) => {
-                // Emit as C array initializer
-                write!(self.output, "(int64_t[]){{").unwrap();
-                for (i, elem) in elements.iter().enumerate() {
-                    if i > 0 {
-                        write!(self.output, ", ").unwrap();
-                    }
-                    self.emit_expression(elem)?;
-                }
-                write!(self.output, "}}").unwrap();
+                // A literal is always a heap-allocated GlyphList; the element
+                // type comes from the first element (Int64 fallback).
+                let elem_ty = self.infer_list_elem(elements);
+                self.emit_list_literal(elements, &elem_ty)?;
             }
             Expr::ChannelBounded { capacity, .. } => {
                 write!(self.output, "glyph_channel_create(").unwrap();
@@ -1696,13 +1927,15 @@ impl CCodegen {
         if let Some(cname) = Self::map_builtin_name_static(n) {
             return Some(cname.to_string());
         }
-        if self.functions.contains_key(n) {
-            return Some(n.to_string());
+        // Module-qualified calls (`math::add`) live under prefixed C names.
+        let key = n.replace("::", "_");
+        if self.functions.contains_key(&key) {
+            return Some(key);
         }
-        if !self.generic_fns.contains_key(n) {
+        if !self.generic_fns.contains_key(&key) {
             return None;
         }
-        let info = self.generic_fns.get(n).cloned()?;
+        let info = self.generic_fns.get(&key).cloned()?;
         let mut arg_types = Vec::with_capacity(args.len());
         for a in args {
             arg_types.push(self.concrete_type_of(a, &self.variable_types)?);
@@ -1715,10 +1948,10 @@ impl CCodegen {
             info.return_type.as_ref(),
             expected_ret,
         )?;
-        let cname = instance_c_name(n, &info.type_params, &subst);
+        let cname = instance_c_name(&key, &info.type_params, &subst);
         self.generic_instances
             .entry(cname.clone())
-            .or_insert_with(|| (n.to_string(), subst));
+            .or_insert_with(|| (key.clone(), subst));
         Some(cname)
     }
 
@@ -1862,11 +2095,26 @@ impl CCodegen {
             }
             Expr::Match { expr: e, arms } => {
                 self.scan_expr(e, var_types, active_subst)?;
+                // Best-effort: expose pattern bindings to arm bodies so calls
+                // like `identity(x)` inside arms resolve for discovery.
+                let scrut = self.concrete_type_of(e, var_types);
                 for arm in arms {
+                    let mut arm_vars;
+                    let vars: &mut HashMap<String, Type> = match &scrut {
+                        Some(t) => {
+                            arm_vars = var_types.clone();
+                            if bind_match_pattern(&arm.pattern, t, &mut arm_vars) {
+                                &mut arm_vars
+                            } else {
+                                &mut *var_types
+                            }
+                        }
+                        None => &mut *var_types,
+                    };
                     if let Some(g) = &arm.guard {
-                        self.scan_expr(g, var_types, active_subst)?;
+                        self.scan_expr(g, vars, active_subst)?;
                     }
-                    self.scan_expr(&arm.body, var_types, active_subst)?;
+                    self.scan_expr(&arm.body, vars, active_subst)?;
                 }
             }
             Expr::If {
@@ -1957,10 +2205,25 @@ impl CCodegen {
                 _ => t,
             }),
             Expr::Ref(inner) => self.concrete_type_of(inner, var_types),
+            Expr::IndexAccess { object, .. } => {
+                match self.concrete_type_of(object, var_types)? {
+                    Type::List(elem) => Some(*elem),
+                    _ => None,
+                }
+            }
             Expr::Cast { target_type, .. } => Some(substitute_type(
                 &self.active_substitution,
                 target_type,
             )),
+            Expr::Range { start, end, .. } => {
+                let st = self.concrete_type_of(start, var_types)?;
+                let et = self.concrete_type_of(end, var_types)?;
+                if st == et {
+                    Some(Type::List(Box::new(st)))
+                } else {
+                    None
+                }
+            }
             Expr::ArrayLiteral(elems) => {
                 let elem = elems.first().and_then(|e| self.concrete_type_of(e, var_types));
                 Some(Type::List(Box::new(elem.unwrap_or(Type::Void))))
@@ -2016,10 +2279,55 @@ impl CCodegen {
             Expr::ChannelBounded { elem_type, .. } => Some(Type::Channel(
                 Box::new(substitute_type(&self.active_substitution, elem_type)),
             )),
+            Expr::MethodCall { object, method, .. } => {
+                // Builtin methods with statically known results.
+                if let Some(obj_ty) = self.concrete_type_of(object, var_types) {
+                    let builtin = match (&obj_ty, method.as_str()) {
+                        (Type::String, "len") => Some(Type::Int64),
+                        (Type::String, "to_uint") => {
+                            Some(Type::Option(Box::new(Type::UInt64)))
+                        }
+                        (Type::List(_), "len") => Some(Type::Int64),
+                        (Type::List(_), "append") => Some(Type::Void),
+                        (Type::Channel(_), "send") => Some(Type::Bool),
+                        (Type::Channel(elem), "recv") => {
+                            Some(Type::Option(elem.clone()))
+                        }
+                        (Type::Channel(_), "close") => Some(Type::Void),
+                        _ => None,
+                    };
+                    if builtin.is_some() {
+                        return builtin;
+                    }
+                }
+                None
+            }
             Expr::Await(inner) => match self.concrete_type_of(inner, var_types)? {
                 Type::Async(t) => Some(*t),
                 _ => None,
             },
+            Expr::Match { expr, arms } => {
+                // Best-effort: resolve the scrutinee, bind pattern variables,
+                // and require all arm bodies to agree. Anything exotic -> None.
+                let scrut = self.concrete_type_of(expr, var_types)?;
+                let mut result: Option<Type> = None;
+                for arm in arms {
+                    let mut arm_vars = var_types.clone();
+                    if !bind_match_pattern(&arm.pattern, &scrut, &mut arm_vars) {
+                        return None;
+                    }
+                    let body_ty = self.concrete_type_of(&arm.body, &arm_vars)?;
+                    match &result {
+                        None => result = Some(body_ty),
+                        Some(prev) => {
+                            if *prev != body_ty {
+                                return None;
+                            }
+                        }
+                    }
+                }
+                result
+            }
             Expr::FieldAccess { object, field } => {
                 let ty = self.concrete_type_of(object, var_types)?;
                 if let Type::Custom(obj_name) = ty {
@@ -2052,6 +2360,19 @@ impl CCodegen {
                 match op {
                     BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
                     | BinOp::And | BinOp::Or => Some(Type::Bool),
+                    BinOp::Concat => {
+                        if matches!(lt, Type::String) || matches!(rt, Type::String) {
+                            Some(Type::String)
+                        } else if let (Type::List(a), Type::List(b)) = (&lt, &rt) {
+                            if a == b {
+                                Some(Type::List(a.clone()))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
                     _ => {
                         if matches!(lt, Type::Float64) || matches!(rt, Type::Float64) {
                             Some(Type::Float64)
@@ -2074,7 +2395,7 @@ impl CCodegen {
             Type::Bool => "int".to_string(),
             Type::Void => "void".to_string(),
             Type::Bytes => "char*".to_string(),
-            Type::List(_) => "void*".to_string(),
+            Type::List(_) => "GlyphList".to_string(),
             Type::Map(_, _) => "void*".to_string(),
             Type::Result(_, _) => "void*".to_string(),
             Type::Option(_) => "void*".to_string(),
@@ -2177,6 +2498,13 @@ impl CCodegen {
                     })
             }
             Expr::Ref(inner) => self.resolved_expr_type(inner),
+            Expr::IndexAccess { object, .. } => {
+                let obj_ty = self.resolved_expr_type(object).map(|t| self.subst_active(&t))?;
+                match obj_ty {
+                    Type::List(elem) => Some(*elem),
+                    _ => None,
+                }
+            }
             Expr::FunctionCall { name, .. } => {
                 let callee = match &**name {
                     Expr::Identifier(n) => n,
@@ -2312,7 +2640,14 @@ impl CCodegen {
         writeln!(self.output, "").unwrap();
 
         // Parse functions (return boxed Option so downstream code can match on them)
-        writeln!(self.output, "void* glyph_box_construct(int64_t tag, const void* data, int64_t size) {{").unwrap();
+        writeln!(self.output, "void glyph_box_free(void* bp) {{").unwrap();
+        writeln!(self.output, "    GlyphBox* b = (GlyphBox*)bp;").unwrap();
+        writeln!(self.output, "    if (!b) return;").unwrap();
+        writeln!(self.output, "    free(b->data); free(b);").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        // Frees only the box and its cell, never the payload itself (pointer
+        // payloads stay owned by their original allocation).
+        writeln!(self.output, "static inline void glyph_box_free_cleanup(GlyphBox** b) {{ if (b) glyph_box_free((void*)*b); }}").unwrap();        writeln!(self.output, "void* glyph_box_construct(int64_t tag, const void* data, int64_t size) {{").unwrap();
         writeln!(self.output, "    GlyphBox* b = (GlyphBox*)malloc(sizeof(GlyphBox));").unwrap();
         writeln!(self.output, "    b->tag = tag; b->data = NULL;").unwrap();
         writeln!(self.output, "    if (data && size > 0) {{ b->data = malloc((size_t)size); memcpy(b->data, data, (size_t)size); }}").unwrap();
@@ -2487,6 +2822,35 @@ impl CCodegen {
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
+        writeln!(self.output, "GlyphList glyph_list_new(int64_t elem_size, int64_t len) {{").unwrap();
+        writeln!(self.output, "    GlyphList l;").unwrap();
+        writeln!(self.output, "    if (len < 0) len = 0;").unwrap();
+        writeln!(self.output, "    if (elem_size < 1) elem_size = 1;").unwrap();
+        writeln!(self.output, "    l.len = len; l.elem_size = elem_size;").unwrap();
+        writeln!(self.output, "    l.data = len > 0 ? malloc((size_t)(elem_size * len)) : NULL;").unwrap();
+        writeln!(self.output, "    return l;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "void glyph_list_append(GlyphList* l, const void* v) {{").unwrap();
+        writeln!(self.output, "    l->data = realloc(l->data, (size_t)((l->len + 1) * l->elem_size));").unwrap();
+        writeln!(self.output, "    memcpy((char*)l->data + l->len * l->elem_size, v, (size_t)l->elem_size);").unwrap();
+        writeln!(self.output, "    l->len++;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "GlyphList glyph_list_concat(GlyphList a, GlyphList b) {{").unwrap();
+        writeln!(self.output, "    GlyphList l = glyph_list_new(a.elem_size, a.len + b.len);").unwrap();
+        writeln!(self.output, "    memcpy(l.data, a.data, (size_t)(a.len * a.elem_size));").unwrap();
+        writeln!(self.output, "    memcpy((char*)l.data + a.len * a.elem_size, b.data, (size_t)(b.len * b.elem_size));").unwrap();
+        writeln!(self.output, "    return l;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "GlyphList glyph_range_i64(int64_t s, int64_t e, int inclusive) {{").unwrap();
+        writeln!(self.output, "    int64_t n = e - s + (inclusive ? 1 : 0);").unwrap();
+        writeln!(self.output, "    if (n < 0) n = 0;").unwrap();
+        writeln!(self.output, "    GlyphList l = glyph_list_new(8, n);").unwrap();
+        writeln!(self.output, "    int64_t* d = (int64_t*)l.data;").unwrap();
+        writeln!(self.output, "    for (int64_t i = 0; i < n; i++) d[i] = s + i;").unwrap();
+        writeln!(self.output, "    return l;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "").unwrap();
+
         // Math functions (use <math.h>)
         writeln!(self.output, "double glyph_abs(double x) {{ return x < 0 ? -x : x; }}").unwrap();
         writeln!(self.output, "double glyph_min(double a, double b) {{ return a < b ? a : b; }}").unwrap();
@@ -2629,6 +2993,7 @@ impl CCodegen {
             "assert_false" => Some("glyph_assert_false"),
             "assert_eq" => Some("glyph_assert_eq"),
             "assert_ne" => Some("glyph_assert_ne"),
+            "drop" => Some("glyph_box_free"),
             "__builtin_assert" => Some("glyph_assert"),
             "__builtin_assert_true" => Some("glyph_assert_true"),
             "__builtin_assert_false" => Some("glyph_assert_false"),

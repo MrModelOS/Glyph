@@ -30,6 +30,30 @@ pub enum Type {
     Generic(String),
 }
 
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::String => write!(f, "String"),
+            Type::UInt64 => write!(f, "UInt64"),
+            Type::Int64 => write!(f, "Int64"),
+            Type::Float64 => write!(f, "Float64"),
+            Type::Bool => write!(f, "Bool"),
+            Type::Void => write!(f, "Void"),
+            Type::Bytes => write!(f, "Bytes"),
+            Type::List(inner) => write!(f, "List<{}>", inner),
+            Type::Map(k, v) => write!(f, "Map<{}, {}>", k, v),
+            Type::Result(ok, err) => write!(f, "Result<{}, {}>", ok, err),
+            Type::Option(inner) => write!(f, "Option<{}>", inner),
+            Type::Async(inner) => write!(f, "Async<{}>", inner),
+            Type::Channel(inner) => write!(f, "Channel<{}>", inner),
+            Type::Array(inner, size) => write!(f, "[{}; {}]", inner, size),
+            Type::Ref(inner) => write!(f, "&{}", inner),
+            Type::Custom(name) => write!(f, "{}", name),
+            Type::Generic(name) => write!(f, "{}", name),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     // Literals
@@ -156,6 +180,28 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+}
+
+impl std::fmt::Display for BinOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Mod => "%",
+            BinOp::Concat => "++",
+            BinOp::Eq => "==",
+            BinOp::Neq => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Le => "<=",
+            BinOp::Ge => ">=",
+            BinOp::And => "&&",
+            BinOp::Or => "||",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

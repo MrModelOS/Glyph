@@ -1,5 +1,13 @@
 @struct P { x: Float64, y: Float64 }
 
+@fn sum_all(xs: List<Int64>) -> Int64 {
+    let total: Int64 = 0;
+    for x in xs {
+        total = total + x;
+    }
+    return total;
+}
+
 @fn main() -> Void {
     let arr: List<Int64> = [10, 20, 30];
     print("arr[1] =");
@@ -15,4 +23,36 @@
     let points: List<P> = [P { x: 1.0, y: 2.0 }, P { x: 3.0, y: 4.0 }];
     print("points[1].y =");
     print_float(points[1].y);
+
+    // Dynamic lists: len, append, iteration, concat, ranges
+    let dyn: List<Int64> = [1, 2, 3];
+    print("len =");
+    print_int(dyn.len());
+    dyn.append(4);
+    dyn.append(5);
+    print("len after append =");
+    print_int(dyn.len());
+    print("sum_all =");
+    print_int(sum_all(dyn));
+
+    let doubled: List<Int64> = dyn ++ dyn;
+    print("concat len =");
+    print_int(doubled.len());
+    print("concat[7] =");
+    print_int(doubled[7]);
+
+    let r: List<Int64> = 0..10;
+    print("range len =");
+    print_int(r.len());
+    print("range[5] =");
+    print_int(r[5]);
+    print("range sum =");
+    print_int(sum_all(r));
+
+    let words: List<String> = ["a", "b"];
+    words.append("c");
+    print("words len =");
+    print_int(words.len());
+    print("words[2] =");
+    println(words[2]);
 }

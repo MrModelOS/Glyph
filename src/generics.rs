@@ -219,6 +219,11 @@ fn unify(subst: &mut HashMap<String, Type>, declared: &Type, arg: &Type) -> bool
             if contains_generic(arg) {
                 return false;
             }
+            // A bare Void is an "unknown" placeholder (empty list, None),
+            // never a real inference result.
+            if matches!(arg, Type::Void) {
+                return false;
+            }
             match subst.get(p) {
                 Some(bound) => bound == arg,
                 None => {
