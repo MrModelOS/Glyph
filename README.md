@@ -353,7 +353,7 @@ optimization = "-O2"
 
 ## Примеры
 
-Все примеры в `examples/` — 19 файлов + многофайловые проекты `examples/project/` и
+Все примеры в `examples/` — 21 файл + многофайловые проекты `examples/project/` и
 `examples/tests/`. Проверить сразу всё:
 
 ```bash
@@ -368,6 +368,8 @@ examples/run_all.sh
 | `enums.glyph`, `enum_test.glyph`, `enum_data.glyph`, `enum_payload.glyph` | перечисления, match, данные вариантов |
 | `match.glyph` | match с паттернами |
 | `lists.glyph` | списки: литералы, срезы, `==`, `.free()`, итерация |
+| `list_refs.glyph` | refcount списков: `free()` с алиасами, copy-on-write при `append` |
+| `fifteen.glyph` | интерактивные «пятнашки»: `read_line`, `List`, `@test`, LCG |
 | `while.glyph`, `v1_features.glyph` | циклы, касты, диапазоны, литералы списков |
 | `math_test.glyph`, `stdlib_test.glyph` | std.math / std.io / std.string |
 | `error_handling.glyph` | `#guard` + enum-ошибка |
@@ -392,10 +394,11 @@ glyphc/
   именованные — через `drop(box)`; payload-указатели остаются чужими
 - Обобщения: только функции (без generic-структур/enum/impl, без trait bounds);
   вызов generic-функции внутри generic-тела требует конкретных типов
-- `List<T>`: передача в функцию копирует fat-struct (буфер общий); `==` — только
-  POD-скаляры (`Int64`/`UInt64`/`Float64`/`Bool`, побайтово), структуры и списки
-  указателей отклоняются громко; срезы `xs[a..b]`/`xs[a..=b]` — копия; `xs.free()`
-  освобождает буфер; `Map` не итерируется кодгеном (рантайма `Map` нет)
+- `List<T>`: refcount (копии делят буфер, `free()` отпускает ref, `append` при
+  нескольких владельцах — copy-on-write); `==`/`!=` — только POD-скаляры
+  (`Int64`/`UInt64`/`Float64`/`Bool`, побайтово), структуры и списки указателей
+  отклоняются громко; срезы `xs[a..b]`/`xs[a..=b]` — копия; рантайма `Map` нет,
+  итерация по `Map` отвергается на этапе проверки типов
 - Конкурентность: без GC — хендлы/каналы не освобождаются (списки — через
   `xs.free()`); нет `select`, таймаутов и async-generic функций; `send(&ref)`
   запрещён (адрес стека)

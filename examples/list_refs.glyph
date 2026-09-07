@@ -1,0 +1,36 @@
+// List refcounting: copies share the buffer, .free() releases only this
+// instance's reference, and append/growth detaches a shared list (copy-on-write).
+// Before v1.3 this file crashed or double-freed.
+
+@fn bump(xs: List<Int64>) -> Void {
+    // The parameter shares the caller's buffer; appending detaches it.
+    xs.append(99);
+}
+
+@fn main() -> Void {
+    // .free() on one copy is safe: the buffer lives until the last copy.
+    let a: List<Int64> = [1, 2, 3];
+    let b: List<Int64> = a;
+    a.free();
+    assert_eq(b[1], 2, "copy survives freeing the other alias");
+
+    // Copy-on-write: appending to a shared list detaches this instance.
+    let c: List<Int64> = [10, 20, 30];
+    let d: List<Int64> = c;
+    c.append(40);
+    assert_eq(c.len(), 4, "appended list grew");
+    assert_eq(d.len(), 3, "other alias is untouched");
+
+    // Appending inside a callee leaves the caller's list alone.
+    let g: List<Int64> = [7, 8, 9];
+    bump(g);
+    assert_eq(g.len(), 3, "callee did not affect caller's list");
+
+    // Double-free safe.
+    let e: List<Int64> = [5, 6];
+    let f: List<Int64> = e;
+    e.free();
+    f.free();
+
+    println("refcount ok");
+}

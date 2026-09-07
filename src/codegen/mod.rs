@@ -38,6 +38,7 @@ pub struct CCodegen {
     generic_fns: HashMap<String, GenericFnInfo>,
     generic_instances: HashMap<String, (String, HashMap<String, Type>)>,
     active_substitution: HashMap<String, Type>,
+    active_lists: Vec<String>,
 }
 
 /// Bind the variables of a match pattern against the scrutinee type.
@@ -92,6 +93,7 @@ impl CCodegen {
             generic_fns: HashMap::new(),
             generic_instances: HashMap::new(),
             active_substitution: HashMap::new(),
+            active_lists: Vec::new(),
         }
     }
 
@@ -173,13 +175,14 @@ impl CCodegen {
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Lists (fat struct over a heap buffer)").unwrap();
-        writeln!(self.output, "typedef struct {{ void* data; int64_t len; int64_t elem_size; }} GlyphList;").unwrap();
+        writeln!(self.output, "typedef struct {{ void* data; int64_t len; int64_t elem_size; int64_t* refs; }} GlyphList;").unwrap();
         writeln!(self.output, "GlyphList glyph_list_new(int64_t elem_size, int64_t len);").unwrap();
         writeln!(self.output, "void glyph_list_append(GlyphList* list, const void* value);").unwrap();
         writeln!(self.output, "GlyphList glyph_list_concat(GlyphList a, GlyphList b);").unwrap();
         writeln!(self.output, "GlyphList glyph_range_i64(int64_t start, int64_t end, int inclusive);").unwrap();
         writeln!(self.output, "GlyphList glyph_list_slice(GlyphList list, int64_t start, int64_t end, int inclusive);").unwrap();
         writeln!(self.output, "int glyph_list_eq(GlyphList a, GlyphList b);").unwrap();
+        writeln!(self.output, "void glyph_list_retain(GlyphList *l);").unwrap();
         writeln!(self.output, "void glyph_list_free(GlyphList *l);").unwrap();
         writeln!(self.output, "").unwrap();
 
@@ -688,8 +691,21 @@ impl CCodegen {
         self.indent += 1;
 
         self.variable_types.clear();
+        let mut list_params: Vec<String> = Vec::new();
         for param in params {
-            self.variable_types.insert(param.name.clone(), self.subst_active(&param.ty));
+            let t = self.subst_active(&param.ty);
+            if matches!(t, Type::List(_)) {
+                list_params.push(param.name.clone());
+            }
+            self.variable_types.insert(param.name.clone(), t);
+        }
+        self.active_lists.clear();
+
+        // A list parameter is a copy of the caller's list: hold a reference
+        // while the function runs and release it in the epilogue.
+        for p in &list_params {
+            self.emit_indent();
+            writeln!(self.output, "glyph_list_retain(&{});", p).unwrap();
         }
 
         for (i, stmt) in body.iter().enumerate() {
@@ -706,6 +722,24 @@ impl CCodegen {
                 }
             }
             self.emit_statement(stmt)?;
+        }
+
+        // Refcounted list cleanup: locals and parameters release their
+        // references at the end of the function.
+        let mut cleanup: Vec<String> = Vec::new();
+        cleanup.extend(self.active_lists.iter().cloned());
+        cleanup.extend(list_params.into_iter());
+        if !cleanup.is_empty() {
+            self.emit_indent();
+            writeln!(self.output, "{{").unwrap();
+            self.indent += 1;
+            for name in &cleanup {
+                self.emit_indent();
+                writeln!(self.output, "glyph_list_free(&{});", name).unwrap();
+            }
+            self.indent -= 1;
+            self.emit_indent();
+            writeln!(self.output, "}}").unwrap();
         }
 
         self.indent -= 1;
@@ -1071,13 +1105,41 @@ impl CCodegen {
                     _ => self.emit_expression(value)?,
                 }
                 writeln!(self.output, ";").unwrap();
+                if let Some(Type::List(_)) = &inferred_ty {
+                    // Refcounted ownership: the variable now holds a reference.
+                    // Fresh producers (literals/ranges/fresh-producing calls)
+                    // hand over a brand-new ref; everything else is a copy of
+                    // an existing list and needs an explicit retain.
+                    self.active_lists.push(name.clone());
+                    if Self::is_existing_list_expr(value) {
+                        self.emit_indent();
+                        writeln!(self.output, "glyph_list_retain(&{});", name).unwrap();
+                    }
+                }
             }
             Stmt::Assignment { target, value } => {
                 self.emit_indent();
+                let is_list_assign = matches!(
+                    self.resolved_expr_type(target).map(|t| self.subst_active(&t)),
+                    Some(Type::List(_))
+                );
+                if is_list_assign {
+                    // Replace the old list reference before storing the new one.
+                    write!(self.output, "glyph_list_free(&(").unwrap();
+                    self.emit_expression(target)?;
+                    writeln!(self.output, "));").unwrap();
+                    self.emit_indent();
+                }
                 self.emit_expression(target)?;
                 write!(self.output, " = ").unwrap();
                 self.emit_expression(value)?;
                 writeln!(self.output, ";").unwrap();
+                if is_list_assign && Self::is_existing_list_expr(value) {
+                    self.emit_indent();
+                    write!(self.output, "glyph_list_retain(&(").unwrap();
+                    self.emit_expression(target)?;
+                    writeln!(self.output, "));").unwrap();
+                }
             }
             Stmt::Expression(expr) => {
                 self.emit_indent();
@@ -2939,12 +3001,29 @@ impl CCodegen {
         writeln!(self.output, "    if (elem_size < 1) elem_size = 1;").unwrap();
         writeln!(self.output, "    l.len = len; l.elem_size = elem_size;").unwrap();
         writeln!(self.output, "    l.data = len > 0 ? malloc((size_t)(elem_size * len)) : NULL;").unwrap();
+        writeln!(self.output, "    l.refs = (int64_t*)malloc(sizeof(int64_t)); *l.refs = 1;").unwrap();
         writeln!(self.output, "    return l;").unwrap();
         writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "void glyph_list_retain(GlyphList* l) {{").unwrap();
+        writeln!(self.output, "    if (l && l->refs) (*l->refs)++;").unwrap();
+        writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "void glyph_list_append(GlyphList* l, const void* v) {{").unwrap();
-        writeln!(self.output, "    l->data = realloc(l->data, (size_t)((l->len + 1) * l->elem_size));").unwrap();
-        writeln!(self.output, "    memcpy((char*)l->data + l->len * l->elem_size, v, (size_t)l->elem_size);").unwrap();
-        writeln!(self.output, "    l->len++;").unwrap();
+        writeln!(self.output, "    int64_t old_len = l->len;").unwrap();
+        writeln!(self.output, "    if (!l->refs) {{").unwrap();
+        writeln!(self.output, "        GlyphList n = glyph_list_new(l->elem_size, old_len + 1);").unwrap();
+        writeln!(self.output, "        if (old_len > 0) memcpy(n.data, l->data, (size_t)(old_len * l->elem_size));").unwrap();
+        writeln!(self.output, "        *l = n;").unwrap();
+        writeln!(self.output, "    }} else if (*l->refs > 1) {{").unwrap();
+        writeln!(self.output, "        // Copy-on-write: other copies share the old buffer.").unwrap();
+        writeln!(self.output, "        GlyphList n = glyph_list_new(l->elem_size, old_len + 1);").unwrap();
+        writeln!(self.output, "        if (old_len > 0) memcpy(n.data, l->data, (size_t)(old_len * l->elem_size));").unwrap();
+        writeln!(self.output, "        (*l->refs)--;").unwrap();
+        writeln!(self.output, "        *l = n;").unwrap();
+        writeln!(self.output, "    }} else {{").unwrap();
+        writeln!(self.output, "        l->data = realloc(l->data, (size_t)((old_len + 1) * l->elem_size));").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "    memcpy((char*)l->data + old_len * l->elem_size, v, (size_t)l->elem_size);").unwrap();
+        writeln!(self.output, "    l->len = old_len + 1;").unwrap();
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "GlyphList glyph_list_concat(GlyphList a, GlyphList b) {{").unwrap();
         writeln!(self.output, "    GlyphList l = glyph_list_new(a.elem_size, a.len + b.len);").unwrap();
@@ -2978,9 +3057,13 @@ impl CCodegen {
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "void glyph_list_free(GlyphList *l) {{").unwrap();
         writeln!(self.output, "    if (!l) return;").unwrap();
-        writeln!(self.output, "    free(l->data);").unwrap();
+        writeln!(self.output, "    if (l->refs && --(*l->refs) <= 0) {{").unwrap();
+        writeln!(self.output, "        free(l->data);").unwrap();
+        writeln!(self.output, "        free(l->refs);").unwrap();
+        writeln!(self.output, "    }}").unwrap();
         writeln!(self.output, "    l->data = NULL;").unwrap();
         writeln!(self.output, "    l->len = 0;").unwrap();
+        writeln!(self.output, "    l->refs = NULL;").unwrap();
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
@@ -3084,6 +3167,16 @@ impl CCodegen {
         }
     }
     out
+}
+
+fn is_existing_list_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Identifier(_)
+            | Expr::FieldAccess { .. }
+            | Expr::IndexAccess { .. }
+            | Expr::Ref(_)
+    )
 }
 
 fn map_builtin_name_static(name: &str) -> Option<&'static str> {
