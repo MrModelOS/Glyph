@@ -7,6 +7,7 @@ mod generics;
 mod modules;
 mod cli;
 mod lsp;
+mod formatter;
 
 use cli::run;
 

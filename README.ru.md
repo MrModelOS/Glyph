@@ -39,6 +39,8 @@ Glyph транслируется в C-код (GNU statement expressions) и со
 - Конкурентность (pthreads): `@fn async`, ленивые хендлы `Async<T>`, `spawn`/`await`,
   типизированные каналы `Channel<T>(capacity)` (буферизованные + rendezvous), `send`/`recv`/`close`
 - Встроенный тестовый фреймворк: `@test`, ассерты, `glyphc test`
+- `glyphc fmt`: канонические отступы/пробелы, комментарии сохраняются, `--check`/`--write`
+- `glyphc fmt`: канонические отступы с сохранением комментариев, `--check`/`--write`
 
 ## Установка
 
@@ -84,6 +86,7 @@ glyphc run --input hello.glyph
 | `run --input f.glyph [--compiler gcc] [--opt -O2]` | Скомпилировать и запустить |
 | `build [--profile dev\|release]` | Собрать проект по `glyph.toml` |
 | `test [-i f.glyph] [--compiler gcc] [--opt -O2]` | Запустить `@test`-функции (без `-i` сканирует `./src`) |
+| `fmt --input f.glyph [--write] [--check]` | Канонические отступы/пробелы; комментарии сохраняются (по умолчанию — в stdout) |
 | `glyphc --lsp` | Экспериментальный LSP-сервер |
 
 Общие флаги: `-h/--help`, `-V/--version`.

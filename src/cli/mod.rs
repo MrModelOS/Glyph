@@ -98,6 +98,21 @@ enum Commands {
         #[arg(long, default_value = "-O2")]
         opt: String,
     },
+
+    /// Format a Glyph source file (indentation/whitespace; comments preserved)
+    Fmt {
+        /// Input file path
+        #[arg(short, long)]
+        input: PathBuf,
+
+        /// Report whether the file is already formatted (exit 1 if not)
+        #[arg(long)]
+        check: bool,
+
+        /// Rewrite the file in place
+        #[arg(long)]
+        write: bool,
+    },
 }
 
 pub fn run() {
@@ -138,6 +153,60 @@ pub fn run() {
         } => {
             run_tests(input.as_ref(), &compiler, &opt);
         }
+        Commands::Fmt { input, check, write } => {
+            fmt_file(&input, check, write);
+        }
+    }
+}
+
+fn fmt_file(input: &PathBuf, check: bool, write: bool) {
+    let source = read_source(input);
+
+    // Never reformat code the compiler cannot lex/parse: validation first.
+    let tokens = match Lexer::new(&source).tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("syntax error: {}", e);
+            process::exit(1);
+        }
+    };
+    if let Err(e) = Parser::new(tokens).parse_program() {
+        eprintln!("syntax error: {}", e);
+        process::exit(1);
+    }
+
+    let formatted = match crate::formatter::format(&source) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("format error: {}", e);
+            process::exit(1);
+        }
+    };
+
+    if check {
+        if formatted == source {
+            println!("{}: already formatted", input.display());
+            return;
+        }
+        eprintln!(
+            "{}: not formatted (whitespace/indentation differs; run 'glyphc fmt --input ... --write')",
+            input.display()
+        );
+        if write {
+            // fall through to write below
+        } else {
+            process::exit(1);
+        }
+    }
+
+    if write {
+        if let Err(e) = fs::write(input, &formatted) {
+            eprintln!("Error writing {}: {}", input.display(), e);
+            process::exit(1);
+        }
+        println!("formatted {}", input.display());
+    } else if !check {
+        print!("{}", formatted);
     }
 }
 

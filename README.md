@@ -37,6 +37,7 @@ plain native binaries.
 - Concurrency (pthreads): `@fn async`, lazy handles `Async<T>`, `spawn`/`await`,
   typed channels `Channel<T>(capacity)`, `send`/`recv`/`close`
 - Built-in test framework: `@test`, asserts, `glyphc test`
+- `glyphc fmt`: comment-preserving canonical indentation + `--check`/`--write`
 
 ## Install
 
@@ -78,7 +79,9 @@ glyphc run --input hello.glyph
 | `ast --input f.glyph` | Show the AST |
 | `run --input f.glyph [--compiler gcc] [--opt -O2]` | Compile and run (inherits stdio) |
 | `build [--profile dev\|release]` | Build a project described by `glyph.toml` |
+| `fmt --input f.glyph [--write] [--check]` | Canonical indentation/whitespace; comments preserved (prints to stdout by default) |
 | `test [-i f.glyph] [--compiler gcc] [--opt -O2]` | Run `@test` functions (scans `./src` without `-i`) |
+| `glyphc --lsp` | Experimental LSP server |
 | `glyphc --lsp` | Experimental LSP server |
 
 Common flags: `-h/--help`, `-V/--version`.
