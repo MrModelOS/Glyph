@@ -34,7 +34,7 @@ plain native binaries.
 - `Result`/`Option` with payloads and `drop(box)` freeing
 - Generic functions: `@fn identity<T>(x: T) -> T` — monomorphization, type inference
   by argument and `let` annotations, nested types (`Option<T>`, `List<T>`)
-- Concurrency (pthreads): `@fn async`, lazy handles `Async<T>`, `spawn`/`await`,
+- Concurrency (M:N worker pool): `@fn async`, lazy handles `Async<T>`, `spawn`/`await`,
   typed channels `Channel<T>(capacity)`, `send`/`recv`/`close`
 - Built-in test framework: `@test`, asserts, `glyphc test`
 - `glyphc fmt`: comment-preserving canonical indentation + `--check`/`--write`

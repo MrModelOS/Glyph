@@ -128,6 +128,7 @@ impl CCodegen {
         writeln!(self.output, "#include <stdint.h>").unwrap();
         writeln!(self.output, "#include <math.h>").unwrap();
         writeln!(self.output, "#include <pthread.h>").unwrap();
+        writeln!(self.output, "#include <unistd.h>").unwrap();
         writeln!(self.output, "#include <sys/stat.h>").unwrap();
         writeln!(self.output, "#include <setjmp.h>").unwrap();
         writeln!(self.output, "").unwrap();
@@ -3048,31 +3049,84 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
-        // Concurrency runtime (pthreads): lazy async handles + MPMC channels
+        // Concurrency runtime (M:N): a fixed worker pool executes spawned
+        // tasks; `await` on a not-yet-started handle runs inline, and a
+        // waiting thread opportunistically drains the queue (work-sharing)
+        // so nested awaits cannot deadlock the pool.
         writeln!(self.output, "typedef struct {{").unwrap();
         writeln!(self.output, "    void* (*run)(void*);").unwrap();
         writeln!(self.output, "    void* args;").unwrap();
         writeln!(self.output, "    void* result;").unwrap();
         writeln!(self.output, "    int started;").unwrap();
         writeln!(self.output, "    int done;").unwrap();
-        writeln!(self.output, "    int joined;").unwrap();
-        writeln!(self.output, "    pthread_t thread;").unwrap();
         writeln!(self.output, "    pthread_mutex_t mu;").unwrap();
         writeln!(self.output, "    pthread_cond_t cond;").unwrap();
         writeln!(self.output, "}} GlyphAsync;").unwrap();
-        writeln!(self.output, "static void* glyph_async_thread_entry(void* p) {{").unwrap();
-        writeln!(self.output, "    GlyphAsync* h = (GlyphAsync*)p;").unwrap();
+        writeln!(self.output, "typedef struct GlyphTask {{").unwrap();
+        writeln!(self.output, "    GlyphAsync* h;").unwrap();
+        writeln!(self.output, "    struct GlyphTask* next;").unwrap();
+        writeln!(self.output, "}} GlyphTask;").unwrap();
+        writeln!(self.output, "static pthread_mutex_t glyph_pool_mu = PTHREAD_MUTEX_INITIALIZER;").unwrap();
+        writeln!(self.output, "static pthread_cond_t glyph_pool_cond = PTHREAD_COND_INITIALIZER;").unwrap();
+        writeln!(self.output, "static GlyphTask* glyph_pool_head = NULL;").unwrap();
+        writeln!(self.output, "static GlyphTask* glyph_pool_tail = NULL;").unwrap();
+        writeln!(self.output, "static void* glyph_pool_worker(void*);").unwrap();
+        writeln!(self.output, "static void glyph_pool_run_task(GlyphTask* t) {{").unwrap();
+        writeln!(self.output, "    GlyphAsync* h = t->h;").unwrap();
         writeln!(self.output, "    void* r = h->run(h->args);").unwrap();
         writeln!(self.output, "    pthread_mutex_lock(&h->mu);").unwrap();
         writeln!(self.output, "    h->result = r; h->done = 1;").unwrap();
         writeln!(self.output, "    pthread_cond_broadcast(&h->cond);").unwrap();
         writeln!(self.output, "    pthread_mutex_unlock(&h->mu);").unwrap();
-        writeln!(self.output, "    return r;").unwrap();
+        writeln!(self.output, "    free(t);").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "static GlyphTask* glyph_pool_pop_nb(void) {{").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&glyph_pool_mu);").unwrap();
+        writeln!(self.output, "    GlyphTask* t = glyph_pool_head;").unwrap();
+        writeln!(self.output, "    if (t) {{").unwrap();
+        writeln!(self.output, "        glyph_pool_head = t->next;").unwrap();
+        writeln!(self.output, "        if (!glyph_pool_head) glyph_pool_tail = NULL;").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&glyph_pool_mu);").unwrap();
+        writeln!(self.output, "    return t;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "static int glyph_pool_worker_count(void) {{").unwrap();
+        writeln!(self.output, "    long n = sysconf(_SC_NPROCESSORS_ONLN);").unwrap();
+        writeln!(self.output, "    if (n < 1) n = 1;").unwrap();
+        writeln!(self.output, "    if (n > 8) n = 8;").unwrap();
+        writeln!(self.output, "    const char* e = getenv(\"GLYPH_WORKERS\");").unwrap();
+        writeln!(self.output, "    if (e) {{ long v = atol(e); if (v >= 1 && v <= 64) n = v; }}").unwrap();
+        writeln!(self.output, "    return (int)n;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "static void* glyph_pool_worker(void* arg) {{").unwrap();
+        writeln!(self.output, "    (void)arg;").unwrap();
+        writeln!(self.output, "    for (;;) {{").unwrap();
+        writeln!(self.output, "        pthread_mutex_lock(&glyph_pool_mu);").unwrap();
+        writeln!(self.output, "        while (!glyph_pool_head) pthread_cond_wait(&glyph_pool_cond, &glyph_pool_mu);").unwrap();
+        writeln!(self.output, "        GlyphTask* t = glyph_pool_head;").unwrap();
+        writeln!(self.output, "        glyph_pool_head = t->next;").unwrap();
+        writeln!(self.output, "        if (!glyph_pool_head) glyph_pool_tail = NULL;").unwrap();
+        writeln!(self.output, "        pthread_mutex_unlock(&glyph_pool_mu);").unwrap();
+        writeln!(self.output, "        glyph_pool_run_task(t);").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "static void glyph_pool_ensure(void) {{").unwrap();
+        writeln!(self.output, "    static int initialized = 0;").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&glyph_pool_mu);").unwrap();
+        writeln!(self.output, "    if (initialized) {{ pthread_mutex_unlock(&glyph_pool_mu); return; }}").unwrap();
+        writeln!(self.output, "    initialized = 1;").unwrap();
+        writeln!(self.output, "    int n = glyph_pool_worker_count();").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&glyph_pool_mu);").unwrap();
+        writeln!(self.output, "    for (int i = 0; i < n; i++) {{").unwrap();
+        writeln!(self.output, "        pthread_t t;").unwrap();
+        writeln!(self.output, "        pthread_create(&t, NULL, glyph_pool_worker, NULL);").unwrap();
+        writeln!(self.output, "        pthread_detach(t);").unwrap();
+        writeln!(self.output, "    }}").unwrap();
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "void* glyph_async_create(void* (*run)(void*), void* args) {{").unwrap();
         writeln!(self.output, "    GlyphAsync* h = (GlyphAsync*)malloc(sizeof(GlyphAsync));").unwrap();
         writeln!(self.output, "    h->run = run; h->args = args; h->result = NULL;").unwrap();
-        writeln!(self.output, "    h->started = 0; h->done = 0; h->joined = 0;").unwrap();
+        writeln!(self.output, "    h->started = 0; h->done = 0;").unwrap();
         writeln!(self.output, "    pthread_mutex_init(&h->mu, NULL);").unwrap();
         writeln!(self.output, "    pthread_cond_init(&h->cond, NULL);").unwrap();
         writeln!(self.output, "    return (void*)h;").unwrap();
@@ -3083,7 +3137,14 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "    if (h->started) {{ pthread_mutex_unlock(&h->mu); return; }}").unwrap();
         writeln!(self.output, "    h->started = 1;").unwrap();
         writeln!(self.output, "    pthread_mutex_unlock(&h->mu);").unwrap();
-        writeln!(self.output, "    pthread_create(&h->thread, NULL, glyph_async_thread_entry, (void*)h);").unwrap();
+        writeln!(self.output, "    glyph_pool_ensure();").unwrap();
+        writeln!(self.output, "    GlyphTask* t = (GlyphTask*)malloc(sizeof(GlyphTask));").unwrap();
+        writeln!(self.output, "    t->h = h; t->next = NULL;").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&glyph_pool_mu);").unwrap();
+        writeln!(self.output, "    if (!glyph_pool_tail) {{ glyph_pool_head = t; glyph_pool_tail = t; }}").unwrap();
+        writeln!(self.output, "    else {{ glyph_pool_tail->next = t; glyph_pool_tail = t; }}").unwrap();
+        writeln!(self.output, "    pthread_cond_signal(&glyph_pool_cond);").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&glyph_pool_mu);").unwrap();
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "void* glyph_async_await(void* hp) {{").unwrap();
         writeln!(self.output, "    GlyphAsync* h = (GlyphAsync*)hp;").unwrap();
@@ -3099,18 +3160,14 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "        return r;").unwrap();
         writeln!(self.output, "    }}").unwrap();
         writeln!(self.output, "    while (!h->done) {{").unwrap();
-        writeln!(self.output, "        if (!h->joined) {{").unwrap();
-        writeln!(self.output, "            h->joined = 1;").unwrap();
-        writeln!(self.output, "            pthread_t t = h->thread;").unwrap();
+        writeln!(self.output, "        GlyphTask* t = glyph_pool_pop_nb();").unwrap();
+        writeln!(self.output, "        if (t) {{").unwrap();
         writeln!(self.output, "            pthread_mutex_unlock(&h->mu);").unwrap();
-        writeln!(self.output, "            void* res = NULL;").unwrap();
-        writeln!(self.output, "            pthread_join(t, &res);").unwrap();
+        writeln!(self.output, "            glyph_pool_run_task(t);").unwrap();
         writeln!(self.output, "            pthread_mutex_lock(&h->mu);").unwrap();
-        writeln!(self.output, "            h->result = res; h->done = 1;").unwrap();
-        writeln!(self.output, "            pthread_cond_broadcast(&h->cond);").unwrap();
-        writeln!(self.output, "        }} else {{").unwrap();
-        writeln!(self.output, "            pthread_cond_wait(&h->cond, &h->mu);").unwrap();
+        writeln!(self.output, "            continue;").unwrap();
         writeln!(self.output, "        }}").unwrap();
+        writeln!(self.output, "        pthread_cond_wait(&h->cond, &h->mu);").unwrap();
         writeln!(self.output, "    }}").unwrap();
         writeln!(self.output, "    void* r = h->result;").unwrap();
         writeln!(self.output, "    pthread_mutex_unlock(&h->mu);").unwrap();
@@ -3639,5 +3696,41 @@ mod tests {
         assert_eq!(CCodegen::escape_c_string("say \"hi\""), "say \\\"hi\\\"");
         assert_eq!(CCodegen::escape_c_string("a\\b"), "a\\\\b");
         assert_eq!(CCodegen::escape_c_string("привет"), "привет");
+    }
+
+    fn compile_fragment(source: &str) -> String {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+        use crate::typechecker::TypeChecker;
+
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+        let mut checker = TypeChecker::new();
+        checker.check_program(&program).unwrap();
+        let mut codegen = CCodegen::new();
+        codegen.compile(&program).unwrap()
+    }
+
+    #[test]
+    fn async_runtime_emits_mn_worker_pool_sharing() {
+        let c = compile_fragment(
+            "@fn async fib(n: Int64) -> Int64 {\n\
+             \x20   if n <= 1 { return n; }\n\
+             \x20   let a: Async<Int64> = fib(n - 1);\n\
+             \x20   spawn a;\n\
+             \x20   return (a await);\n\
+             }\n\
+             @fn main() -> Int64 { return 0; }",
+        );
+        assert!(c.contains("GlyphTask"), "worker pool task type missing");
+        assert!(c.contains("glyph_pool_head"), "shared FIFO missing");
+        assert!(c.contains("glyph_pool_worker"), "worker threads missing");
+        assert!(c.contains("GlyphAsync"), "async handle type missing");
+        assert!(
+            !c.contains("pthread_create(&h->thread"),
+            "spawn must not create a per-task thread"
+        );
     }
 }
