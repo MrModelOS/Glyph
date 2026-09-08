@@ -372,7 +372,7 @@ examples/run_all.sh
 | `lists.glyph` | списки: литералы, срезы, `==`, `.free()`, итерация |
 | `list_refs.glyph` | refcount списков: `free()` с алиасами, copy-on-write при `append` |
 | `fifteen.glyph` | интерактивные «пятнашки»: `read_line`, `List`, `@test`, LCG |
-| `maps.glyph` | `Map<String, V>`: литерал `#{...}`, индекс, `get`/`put`/`len`/`free` |
+| `maps.glyph` | `Map<String, V>`: литерал `#{...}`, индекс, `get`/`put`/`len`/`free`, итерация `for k in m` |
 | `while.glyph`, `v1_features.glyph` | циклы, касты, диапазоны, литералы списков |
 | `math_test.glyph`, `stdlib_test.glyph` | std.math / std.io / std.string |
 | `error_handling.glyph` | `#guard` + enum-ошибка |
@@ -402,8 +402,8 @@ glyphc/
   (`Int64`/`UInt64`/`Float64`/`Bool`, побайтово), структуры и списки указателей
   отклоняются громко; срезы `xs[a..b]`/`xs[a..=b]` — копия
 - `Map<String, V>`: рантайм есть (`#{...}`, индекс, `put`/`get`/`len`/`free`),
-  но итерация `for k in m` ещё не реализована и отвергается на этапе проверки
-  типов; ключи — только `String`
+  итерация `for k in m` даёт ключи по bucket-цепям (порядок = хэшу, не вставке);
+  ключи — только `String`
 - Конкурентность: без GC — хендлы/каналы не освобождаются (списки — через
   `xs.free()`); нет `select`, таймаутов и async-generic функций; `send(&ref)`
   запрещён (адрес стека)

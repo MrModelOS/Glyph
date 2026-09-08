@@ -27,7 +27,8 @@ plain native binaries.
   ranges `0..10`, `.len()`, `append`, `for x in xs`, `++` concatenation,
   `==` for POD lists, refcounted buffers with `xs.free()`
 - Maps `Map<String, V>`: literal `#{ "k": v }`, indexing `m["k"]`
-  read/write, `.put()`, `.get() -> Option<V>`, `.len()`, `.free()`
+  read/write, `.put()`, `.get() -> Option<V>`, `.len()`, `.free()`,
+  iteration `for k in m` yields keys
 - `Result`/`Option` with payloads and `drop(box)` freeing
 - Generic functions: `@fn identity<T>(x: T) -> T` — monomorphization, type inference
   by argument and `let` annotations, nested types (`Option<T>`, `List<T>`)
@@ -161,7 +162,7 @@ glyphc test -i examples/fifteen.glyph
 `examples/fifteen.glyph` is a real interactive program (15-puzzle) written in Glyph:
 lists, slicing, functions, `read_line`, and `@test`s. `examples/list_refs.glyph`
 demonstrates the refcounted list semantics, and `examples/maps.glyph` shows the
-`Map<String, V>` runtime (`#{}` literal, indexing, `put`/`get`/`len`/`free`).
+`Map<String, V>` runtime (`#{}` literal, indexing, `put`/`get`/`len`/`free`, `for k in m`).
 
 ## Limitations
 
@@ -170,8 +171,8 @@ demonstrates the refcounted list semantics, and `examples/maps.glyph` shows the
 - Generics cover functions only (no generic structs/enums/impl, no trait bounds);
   calling a generic function inside a generic body needs concrete types
 - `List<T>`: `==`/`!=` works only for POD scalars; slices are copies
-- `Map<String, V>`: runtime exists but iterating (`for k in m`) is not implemented
-  and is rejected in typechecking; keys are `String` only
+- `Map<String, V>`: iteration (`for k in m`) walks hash buckets, so key order
+  is not insertion order; keys are `String` only
 - Concurrency: no GC, `select`, or timeouts; async generic functions unsupported
 - LSP server is experimental
 

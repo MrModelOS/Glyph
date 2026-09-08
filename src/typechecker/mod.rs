@@ -65,9 +65,9 @@ pub enum TypeError {
         source: Box<TypeError>,
     },
 
-    #[error("line {line}: {source}")]
+    #[error("line {loc}: {source}")]
     AtLine {
-        line: usize,
+        loc: LineCol,
         source: Box<TypeError>,
     },
 }
@@ -366,7 +366,9 @@ impl TypeChecker {
                 }
                 TopLevelItem::Const { name, ty, value, .. } => {
                     let value_type = self.check_expression(value)?;
-                    if !self.types_compatible(ty, &value_type) {
+                    if !self.types_compatible(ty, &value_type)
+                        && !self.int_literal_satisfies(ty, &value_type, value)
+                    {
                         return Err(TypeError::ConstTypeMismatch {
                             expected: format!("{}", ty),
                             found: format!("{}", value_type),
@@ -565,7 +567,7 @@ impl TypeChecker {
                         return Err(e);
                     }
                     return Err(TypeError::AtLine {
-                        line: stmt.line(),
+                        loc: stmt.loc(),
                         source: Box::new(e),
                     });
                 }
@@ -676,7 +678,9 @@ impl TypeChecker {
                 };
 
                 let stored = if let Some(expected) = ty {
-                    if !self.types_compatible(expected, &value_type) {
+                    if !self.types_compatible(expected, &value_type)
+                        && !self.int_literal_satisfies(expected, &value_type, value)
+                    {
                         return Err(TypeError::TypeMismatch {
                             expected: format!("{}", expected),
                             found: format!("{}", value_type),
@@ -696,7 +700,9 @@ impl TypeChecker {
                 let target_type = self.check_expression(target)?;
                 let value_type = self.check_expression(value)?;
 
-                if !self.types_compatible(&target_type, &value_type) {
+                if !self.types_compatible(&target_type, &value_type)
+                    && !self.int_literal_satisfies(&target_type, &value_type, value)
+                {
                     return Err(TypeError::TypeMismatch {
                         expected: format!("{}", target_type),
                         found: format!("{}", value_type),
@@ -743,7 +749,8 @@ impl TypeChecker {
                 let elem_type = match iter_type {
                     Type::List(elem) => *elem,
                     Type::Array(elem, _) => *elem,
-                    Type::Map(_, _) => return Err(TypeError::InvalidIterableType),
+                    // Iterating a Map yields its string keys.
+                    Type::Map(_, _) => Type::String,
                     _ => return Err(TypeError::InvalidIterableType),
                 };
 
@@ -941,7 +948,9 @@ impl TypeChecker {
 
                 for (arg, (_, param_type, _)) in args.iter().zip(&sig.params) {
                     let arg_type = self.check_expression(arg)?;
-                    if !self.types_compatible(param_type, &arg_type) {
+                    if !self.types_compatible(param_type, &arg_type)
+                        && !self.int_literal_satisfies(param_type, &arg_type, arg)
+                    {
                         return Err(TypeError::TypeMismatch {
                             expected: format!("{}", param_type),
                             found: format!("{}", arg_type),
@@ -1157,7 +1166,9 @@ impl TypeChecker {
                             }
                             for (arg, (_, param_type, _)) in args.iter().zip(&sig.params[1..]) {
                                 let arg_type = self.check_expression(arg)?;
-                                if !self.types_compatible(param_type, &arg_type) {
+                                if !self.types_compatible(param_type, &arg_type)
+                                    && !self.int_literal_satisfies(param_type, &arg_type, arg)
+                                {
                                     return Err(TypeError::TypeMismatch {
                                         expected: format!("{}", param_type),
                                         found: format!("{}", arg_type),
@@ -1560,7 +1571,9 @@ impl TypeChecker {
                         if let Some(expected_types) = &variant_def.data {
                             for (arg, expected_type) in args.iter().zip(expected_types) {
                                 let arg_type = self.check_expression(arg)?;
-                                if !self.types_compatible(expected_type, &arg_type) {
+                                if !self.types_compatible(expected_type, &arg_type)
+                                    && !self.int_literal_satisfies(expected_type, &arg_type, arg)
+                                {
                                     return Err(TypeError::TypeMismatch {
                                         expected: format!("{}", expected_type),
                                         found: format!("{}", arg_type),
@@ -1733,6 +1746,14 @@ impl TypeChecker {
             }
             Pattern::Wildcard => Ok(()),
         }
+    }
+
+    /// A plain integer literal (typed `Int64` by default) satisfies a declared
+    /// `UInt64`/`Float64` expectation, matching how `5` works for any Rust int.
+    fn int_literal_satisfies(&self, expected: &Type, found: &Type, expr: &Expr) -> bool {
+        matches!(expr, Expr::IntegerLiteral(_))
+            && matches!(found, Type::Int64)
+            && matches!(expected, Type::Int64 | Type::UInt64 | Type::Float64)
     }
 
     fn types_compatible(&self, a: &Type, b: &Type) -> bool {
@@ -2168,8 +2189,8 @@ mod tests {
     }
 
     #[test]
-    fn test_type_check_for_map_rejected() {
-        // Iterating over a Map is not implemented; must fail early.
+    fn test_type_check_for_map_yields_keys() {
+        // Iterating over a Map yields its string keys.
         let input = "\
 @fn f(m: Map<String, Int64>) -> Void {
     for k in m {
@@ -2183,10 +2204,7 @@ mod tests {
         let program = parser.parse_program().unwrap();
 
         let mut checker = TypeChecker::new();
-        let result = checker.check_program(&program);
-        assert!(result.is_err());
-        let msg = format!("{}", result.unwrap_err());
-        assert!(msg.contains("in function 'f'"));
+        assert!(checker.check_program(&program).is_ok());
     }
 
     #[test]

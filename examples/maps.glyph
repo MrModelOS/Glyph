@@ -30,6 +30,10 @@
     strings.put("c", "glyph");
     print(strings["c"]);
 
+    for k in scores {
+        print(k);
+    }
+
     scores.free();
     strings.free();
 }

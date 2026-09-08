@@ -1316,6 +1316,34 @@ impl CCodegen {
                     self.indent -= 1;
                     self.emit_indent();
                     writeln!(self.output, "}} }}").unwrap();
+                } else if matches!(
+                    self.resolved_expr_type(iterable).map(|t| self.subst_active(&t)),
+                    Some(Type::Map(_, _))
+                ) {
+                    // Iterating a Map yields its keys. Buckets are read-only
+                    // here so the map can be walked without copying entries.
+                    self.variable_types.insert(variable.clone(), Type::String);
+                    self.emit_indent();
+                    write!(self.output, "{{ GlyphMap _m = ").unwrap();
+                    self.emit_expression(iterable)?;
+                    write!(
+                        self.output,
+                        "; for (int64_t _bi = 0; _bi < _m.bucket_count; _bi++) {{ "
+                    )
+                    .unwrap();
+                    write!(
+                        self.output,
+                        "for (GlyphMapEntry* _be = _m.buckets[_bi]; _be; _be = _be->next) {{ "
+                    )
+                    .unwrap();
+                    write!(self.output, "char* {} = _be->key;", variable).unwrap();
+                    self.indent += 1;
+                    for stmt in body {
+                        self.emit_statement(stmt)?;
+                    }
+                    self.indent -= 1;
+                    self.emit_indent();
+                    writeln!(self.output, "}} }} }}").unwrap();
                 } else {
                     let ty = self
                         .resolved_expr_type(iterable)

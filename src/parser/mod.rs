@@ -625,16 +625,16 @@ impl Parser {
             Token::Let => self.parse_let(),
             Token::Return => self.parse_return(),
             Token::Break => {
-                let line = self.peek_spanned().line;
+                let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
                 self.advance();
                 self.expect(&Token::Semicolon)?;
-                Ok(Stmt::Break(line))
+                Ok(Stmt::Break(loc))
             }
             Token::Continue => {
-                let line = self.peek_spanned().line;
+                let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
                 self.advance();
                 self.expect(&Token::Semicolon)?;
-                Ok(Stmt::Continue(line))
+                Ok(Stmt::Continue(loc))
             }
             Token::Loop => self.parse_loop(),
             Token::While => self.parse_while(),
@@ -642,21 +642,21 @@ impl Parser {
             Token::Guard => self.parse_guard(),
             Token::Spawn => self.parse_spawn(),
             Token::If => {
-                let line = self.peek_spanned().line;
+                let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
                 let expr = self.parse_if()?;
-                Ok(Stmt::Expression(line, expr))
+                Ok(Stmt::Expression(loc, expr))
             }
             Token::Match => {
-                let line = self.peek_spanned().line;
+                let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
                 let expr = self.parse_match()?;
-                Ok(Stmt::Expression(line, expr))
+                Ok(Stmt::Expression(loc, expr))
             }
             _ => self.parse_expression_statement(),
         }
     }
 
     fn parse_let(&mut self) -> Result<Stmt, ParseError> {
-        let line = self.peek_spanned().line;
+        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
         self.advance(); // consume let
 
         let mutable = if self.peek() == &Token::Mut {
@@ -680,7 +680,7 @@ impl Parser {
         self.expect(&Token::Semicolon)?;
 
         Ok(Stmt::Let {
-            line,
+            loc,
             name,
             ty,
             value,
@@ -689,7 +689,7 @@ impl Parser {
     }
 
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
-        let line = self.peek_spanned().line;
+        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
         self.advance(); // consume return
 
         let value = if self.peek() == &Token::Semicolon {
@@ -700,21 +700,21 @@ impl Parser {
 
         self.expect(&Token::Semicolon)?;
 
-        Ok(Stmt::Return(line, value))
+        Ok(Stmt::Return(loc, value))
     }
 
     fn parse_loop(&mut self) -> Result<Stmt, ParseError> {
-        let line = self.peek_spanned().line;
+        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
         self.advance(); // consume loop
         self.expect(&Token::LBrace)?;
         let body = self.parse_block()?;
         self.expect(&Token::RBrace)?;
 
-        Ok(Stmt::Loop(line, body))
+        Ok(Stmt::Loop(loc, body))
     }
 
     fn parse_while(&mut self) -> Result<Stmt, ParseError> {
-        let line = self.peek_spanned().line;
+        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
         self.advance(); // consume while
         let condition = self.parse_expression()?;
         self.expect(&Token::LBrace)?;
@@ -722,14 +722,14 @@ impl Parser {
         self.expect(&Token::RBrace)?;
 
         Ok(Stmt::While {
-            line,
+            loc,
             condition,
             body,
         })
     }
 
     fn parse_for(&mut self) -> Result<Stmt, ParseError> {
-        let line = self.peek_spanned().line;
+        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
         self.advance(); // consume for
         let variable = self.expect_ident()?;
         self.expect(&Token::In)?;
@@ -739,7 +739,7 @@ impl Parser {
         self.expect(&Token::RBrace)?;
 
         Ok(Stmt::For {
-            line,
+            loc,
             variable,
             iterable,
             body,
@@ -747,7 +747,7 @@ impl Parser {
     }
 
     fn parse_guard(&mut self) -> Result<Stmt, ParseError> {
-        let line = self.peek_spanned().line;
+        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
         self.advance(); // consume #guard
         self.expect(&Token::LParen)?;
         let condition = self.parse_expression()?;
@@ -764,23 +764,23 @@ impl Parser {
         self.expect(&Token::Semicolon)?;
 
         Ok(Stmt::Guard {
-            line,
+            loc,
             condition,
             else_body,
         })
     }
 
     fn parse_spawn(&mut self) -> Result<Stmt, ParseError> {
-        let line = self.peek_spanned().line;
+        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
         self.advance(); // consume spawn
         let expr = self.parse_expression()?;
         self.expect(&Token::Semicolon)?;
 
-        Ok(Stmt::Spawn(line, expr))
+        Ok(Stmt::Spawn(loc, expr))
     }
 
     fn parse_expression_statement(&mut self) -> Result<Stmt, ParseError> {
-        let line = self.peek_spanned().line;
+        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
         let expr = self.parse_expression()?;
 
         // Check if this is an assignment
@@ -789,13 +789,13 @@ impl Parser {
             let value = self.parse_expression()?;
             self.expect(&Token::Semicolon)?;
             Ok(Stmt::Assignment {
-                line,
+                loc,
                 target: expr,
                 value,
             })
         } else {
             self.expect(&Token::Semicolon)?;
-            Ok(Stmt::Expression(line, expr))
+            Ok(Stmt::Expression(loc, expr))
         }
     }
 

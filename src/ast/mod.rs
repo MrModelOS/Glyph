@@ -238,11 +238,23 @@ pub enum Pattern {
     Wildcard,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineCol {
+    pub line: usize,
+    pub col: usize,
+}
+
+impl std::fmt::Display for LineCol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.line, self.col)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     // Variable declaration
     Let {
-        line: usize,
+        loc: LineCol,
         name: String,
         ty: Option<Type>,
         value: Expr,
@@ -251,36 +263,36 @@ pub enum Stmt {
 
     // Assignment
     Assignment {
-        line: usize,
+        loc: LineCol,
         target: Expr,
         value: Expr,
     },
 
     // Expression statement
-    Expression(usize, Expr),
+    Expression(LineCol, Expr),
 
     // Return statement
-    Return(usize, Option<Expr>),
+    Return(LineCol, Option<Expr>),
 
     // Break statement
-    Break(usize),
+    Break(LineCol),
 
     // Continue statement
-    Continue(usize),
+    Continue(LineCol),
 
     // Loop statement
-    Loop(usize, Vec<Stmt>),
+    Loop(LineCol, Vec<Stmt>),
 
     // While loop
     While {
-        line: usize,
+        loc: LineCol,
         condition: Expr,
         body: Vec<Stmt>,
     },
 
     // For loop
     For {
-        line: usize,
+        loc: LineCol,
         variable: String,
         iterable: Expr,
         body: Vec<Stmt>,
@@ -288,30 +300,30 @@ pub enum Stmt {
 
     // Guard statement
     Guard {
-        line: usize,
+        loc: LineCol,
         condition: Expr,
         else_body: Vec<Stmt>,
     },
 
     // Spawn statement
-    Spawn(usize, Expr),
+    Spawn(LineCol, Expr),
 }
 
 impl Stmt {
-    /// The source line where this statement starts (1-based).
-    pub fn line(&self) -> usize {
+    /// Full location of the statement start.
+    pub fn loc(&self) -> LineCol {
         match self {
-            Stmt::Let { line, .. }
-            | Stmt::Assignment { line, .. }
-            | Stmt::While { line, .. }
-            | Stmt::For { line, .. }
-            | Stmt::Guard { line, .. } => *line,
-            Stmt::Expression(line, _)
-            | Stmt::Return(line, _)
-            | Stmt::Break(line)
-            | Stmt::Continue(line)
-            | Stmt::Loop(line, _)
-            | Stmt::Spawn(line, _) => *line,
+            Stmt::Let { loc: l, .. }
+            | Stmt::Assignment { loc: l, .. }
+            | Stmt::While { loc: l, .. }
+            | Stmt::For { loc: l, .. }
+            | Stmt::Guard { loc: l, .. } => *l,
+            Stmt::Expression(l, _)
+            | Stmt::Return(l, _)
+            | Stmt::Break(l)
+            | Stmt::Continue(l)
+            | Stmt::Loop(l, _)
+            | Stmt::Spawn(l, _) => *l,
         }
     }
 }

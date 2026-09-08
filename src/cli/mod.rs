@@ -7,7 +7,7 @@ use std::process;
 use crate::ast::*;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::typechecker::TypeChecker;
+use crate::typechecker::{TypeChecker, TypeError};
 use crate::codegen::{compile_to_c, compile_to_c_tests};
 use crate::modules::ModuleResolver;
 
@@ -469,6 +469,33 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
     }
 }
 
+fn type_error_span(e: &TypeError) -> Option<LineCol> {
+    match e {
+        TypeError::InFunction { source, .. } => type_error_span(source),
+        TypeError::AtLine { loc, .. } => Some(*loc),
+        _ => None,
+    }
+}
+
+/// Prints a source snippet with a caret pointing at the failing statement.
+fn print_type_error_snippet(source: &str, e: &TypeError) {
+    let Some(loc) = type_error_span(e) else {
+        return;
+    };
+    let Some(raw) = source.lines().nth(loc.line.saturating_sub(1)) else {
+        return;
+    };
+    let mut text: String = raw.chars().take(100).collect();
+    let truncated = raw.chars().count() > 100;
+    if truncated {
+        text.push_str("…");
+    }
+    eprintln!("  --> {}:{}", loc.line, loc.col);
+    eprintln!("   |");
+    eprintln!(" {:>3} | {}", loc.line, text);
+    eprintln!("     | {}^", " ".repeat(loc.col.saturating_sub(1)));
+}
+
 fn check_file(input: &PathBuf) {
     let source = read_source(input);
 
@@ -499,6 +526,7 @@ fn check_file(input: &PathBuf) {
             println!("✓ File {} is valid", input.display());
         }
         Err(e) => {
+            print_type_error_snippet(&source, &e);
             eprintln!("Type error: {}", e);
             process::exit(1);
         }
