@@ -164,6 +164,38 @@ lists, slicing, functions, `read_line`, and `@test`s. `examples/list_refs.glyph`
 demonstrates the refcounted list semantics, and `examples/maps.glyph` shows the
 `Map<String, V>` runtime (`#{}` literal, indexing, `put`/`get`/`len`/`free`, `for k in m`).
 
+## Performance
+
+Glyph compiles to C and inherits the C toolchain: scalar code compiles to the
+same machine code, and the runtime overhead is proportional to the
+allocation/GC features you use. The table below compares identical algorithms
+on one machine (min of 3 runs, gcc 16.2.1 `-O2`, rustc 1.98.1 `--release` with
+LTO, meant to show the ballpark, not to be a rigorous benchmark).
+
+```
+workload        glyph      c      rust   ratio (glyph/c)
+loop_sum         468ms   466ms   541ms        1.00x
+list_append      267ms    62ms    59ms        4.31x
+map_put_get      346ms   152ms   169ms        2.28x
+```
+
+Hardware: 11th Gen Intel Core i5-1135G7, 2026-09-08. `loop_sum` sums
+`i % 7` over a runtime size (400M iterations); `list_append` appends 20M
+int64s to a dynamic array and sums them; `map_put_get` puts+gets 2M string-key
+entries into a 100-key churn. Reproduce with `bench/gen.sh` + `bench/run.sh`.
+
+Notes:
+
+- `loop_sum` is at parity with C — the loop, modulo and integer arithmetic emit
+  the same code gcc would write by hand. (Rust's 541ms vs 466ms is LLVM's
+  cost-model on `%`.)
+- `list_append` pays for the refcounted, resize-copying generic list
+  (`GlyphList`). A handwritten realloc'd C array is ~4x faster — expected for
+  a safe growable array with runtime element-type checks.
+- `map_put_get` is ~2.3x C's open-addressing-of-the-same-size map: string-hash
+  plus per-op heap boxes of `Option` payloads. `free()` on the map releases the
+  C memory; a future arena/stable-address map would close the gap.
+
 ## Limitations
 
 - Runtime is unmanaged: `Result`/`Option` payloads are heap boxes freed via `drop(box)`;
