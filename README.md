@@ -17,6 +17,8 @@ plain native binaries.
 ## Features
 
 - Static typing: `Int64`, `UInt64`, `Float64`, `Bool`, `String`, `Bytes`
+- Flow-sensitive static analysis: using a `List`/`Map` after `.free()`
+  (or freeing it twice) is rejected at compile time until reassignment
 - User types: `@struct`, `@enum` with payload data in variants
 - `@impl` methods: `obj.method(args)`, receiver is the first parameter
 - Control flow: `if`/`else`, `match` (including variant patterns with payload), `while`, `loop`, `for .. in`
@@ -205,6 +207,9 @@ Notes:
 - `List<T>`: `==`/`!=` works only for POD scalars; slices are copies
 - `Map<String, V>`: iteration (`for k in m`) walks hash buckets, so key order
   is not insertion order; keys are `String` only
+- The use-after-free / double-free detector is statement-flow based and does not
+  track aliases: `let y = xs; xs.free(); y.len()` is not yet caught, and a free
+  inside a `match` arm is treated as having happened after the `match`
 - Concurrency: no GC, `select`, or timeouts; async generic functions unsupported
 - LSP server is experimental
 

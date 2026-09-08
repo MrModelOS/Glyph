@@ -65,6 +65,8 @@
     print("slice eq =");
     print_bool(sub == [2, 3]);
     sub.free();
-    print("after free len =");
+    sub = [7, 8, 9]; // reassignment resurrects the slot
+    print("after free, reassigned len =");
     print_int(sub.len());
+    sub.free();
 }

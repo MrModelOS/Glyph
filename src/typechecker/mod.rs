@@ -70,6 +70,12 @@ pub enum TypeError {
         loc: LineCol,
         source: Box<TypeError>,
     },
+
+    #[error("use after free: '{name}' (list/map buffer was freed by .free())")]
+    UseAfterFree { name: String },
+
+    #[error("double free: '{name}' was already freed")]
+    DoubleFree { name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +152,9 @@ pub struct TypeChecker {
     env: TypeEnv,
     generic_fns: HashMap<String, GenericFnInfo>,
     instantiated: HashSet<String>,
+    /// Names of List/Map variables freed via `.free()` in the current
+    /// statement flow. Flow-sensitive, leaks out of nested scopes.
+    freed_vars: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -263,6 +272,7 @@ impl TypeChecker {
             env,
             generic_fns: HashMap::new(),
             instantiated: HashSet::new(),
+            freed_vars: HashSet::new(),
         }
     }
 
@@ -415,6 +425,7 @@ impl TypeChecker {
                     env: func_env,
                     generic_fns: self.generic_fns.clone(),
                     instantiated: self.instantiated.clone(),
+                    freed_vars: HashSet::new(),
                 };
                 checker
                     .check_block(body, return_type.as_ref())
@@ -440,6 +451,7 @@ impl TypeChecker {
                         env: func_env,
                         generic_fns: self.generic_fns.clone(),
                         instantiated: self.instantiated.clone(),
+                        freed_vars: HashSet::new(),
                     };
                     checker
                         .check_block(&method.body, method.return_type.as_ref())
@@ -639,7 +651,11 @@ impl TypeChecker {
                 func_env.define_variable(p.name.clone(), p.ty.clone());
             }
             let body: Vec<Stmt> = info.body.iter().map(|s| substitute_stmt(&subst, s)).collect();
+            let outer_freed = self.freed_vars.clone();
             self.check_block_swapped(func_env, &body, info.return_type.as_ref())?;
+            // A generic instantiation is a separate function: its statements
+            // must not leak use-after-free state into the caller's flow.
+            self.freed_vars = outer_freed;
         }
 
         let ret = info
@@ -693,10 +709,22 @@ impl TypeChecker {
                     value_type
                 };
 
+                // A fresh binding of the same name resurrects a freed slot
+                // (the old buffer is replaced, not accessed).
+                self.freed_vars.remove(name);
                 self.env.define_variable(name.clone(), stored);
                 Ok(None)
             }
             Stmt::Assignment { target, value, .. } => {
+                match target {
+                    // Writing a whole variable does not read the old buffer:
+                    // the freed mark is lifted before checking the RHS.
+                    Expr::Identifier(name) => {
+                        self.freed_vars.remove(name);
+                    }
+                    _ => {}
+                }
+
                 let target_type = self.check_expression(target)?;
                 let value_type = self.check_expression(value)?;
 
@@ -787,6 +815,9 @@ impl TypeChecker {
             Expr::BoolLiteral(_) => Ok(Type::Bool),
 
             Expr::Identifier(name) => {
+                if self.freed_vars.contains(name) {
+                    return Err(TypeError::UseAfterFree { name: name.clone() });
+                }
                 // Check variables first, then constants
                 if let Some(ty) = self.env.get_variable(name) {
                     return Ok(ty.clone());
@@ -972,10 +1003,20 @@ impl TypeChecker {
                 object,
                 method,
                 args,
-            } => {
+} => {
+                // A repeated `.free()` on the same variable is a double free;
+                // checked before the object expression so the message is specific.
+                if method == "free" && args.is_empty() {
+                    if let Expr::Identifier(name) = object.as_ref() {
+                        if self.freed_vars.contains(name) {
+                            return Err(TypeError::DoubleFree { name: name.clone() });
+                        }
+                    }
+                }
+
                 let object_type = self.check_expression(object)?;
 
-                match &object_type {
+                let result = match &object_type {
                     Type::String => match method.as_str() {
                         "len" => Ok(Type::Int64),
                         "to_uint" => Ok(Type::Option(Box::new(Type::UInt64))),
@@ -1186,7 +1227,27 @@ impl TypeChecker {
                         }
                     }
                     _ => Err(TypeError::CannotCallNonFunction(format!("{}", object_type))),
+                };
+
+                // Track `.free()` on List/Map variables so later reads and
+                // repeated frees are rejected in the current statement flow.
+                if method == "free" && args.is_empty() {
+                    if let Expr::Identifier(name) = object.as_ref() {
+                        match &object_type {
+                            Type::List(_) | Type::Map(_, _) => {
+                                if self.freed_vars.contains(name) {
+                                    return Err(TypeError::DoubleFree {
+                                        name: name.clone(),
+                                    });
+                                }
+                                self.freed_vars.insert(name.clone());
+                            }
+                            _ => {}
+                        }
+                    }
                 }
+
+                result
             }
 
             Expr::FieldAccess { object, field } => {
@@ -2178,6 +2239,61 @@ mod tests {
     let n: Int64 = a.len();
     print_int(n);
     print_int(b[0]);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_use_after_free_rejected() {
+        let input = "\
+@fn main() -> Void {
+    let xs: List<Int64> = [1, 2, 3];
+    xs.free();
+    xs.append(4);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        let msg = format!("{}", checker.check_program(&program).unwrap_err());
+        assert!(msg.contains("use after free"), "got {}", msg);
+    }
+
+    #[test]
+    fn test_type_check_double_free_rejected() {
+        let input = "\
+@fn main() -> Void {
+    let m: Map<String, Int64> = #{ \"a\": 1 };
+    m.free();
+    m.free();
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        let msg = format!("{}", checker.check_program(&program).unwrap_err());
+        assert!(msg.contains("double free"), "got {}", msg);
+    }
+
+    #[test]
+    fn test_type_check_freed_then_reassigned_is_ok() {
+        let input = "\
+@fn main() -> Void {
+    let xs: List<Int64> = [1, 2, 3];
+    xs.free();
+    xs = [4, 5];
+    xs.append(6);
+    xs.free();
 }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize().unwrap();
