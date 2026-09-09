@@ -1,0 +1,51 @@
+@fn async produce(ch: Channel<Int64>) -> Int64 {
+    ch.send(7);
+    ch.send(8);
+    ch.close();
+    return 2;
+}
+
+@fn async zero() -> Int64 {
+    return 0;
+}
+
+@fn main() -> Void {
+    let ch: Channel<Int64> = Channel<Int64>(2);
+    let p: Async<Int64> = produce(ch);
+    spawn p;
+
+    // An await arm and a recv arm race; source order picks the await first.
+    let h: Async<Int64> = zero();
+    select {
+        | v: Int64 <- h await => print_int(v),
+        | v: Int64 <- ch.recv() => print_int(v + 10)
+    }
+
+    select {
+        | v: Int64 <- ch.recv() => print_int(v),
+        | timeout(30) => print_int(-1)
+    }
+
+    // Wait for the producer to finish; closing does not drain the buffer, so
+    // the second message is still receivable here.
+    let r: Int64 = p await;
+
+    // A closed channel still hands over buffered messages.
+    select {
+        | v: Int64 <- ch.recv() => print_int(v + 100),
+        | timeout(30) => print_int(-1)
+    }
+
+    // Nothing ready at this instant -> the default arm fires immediately.
+    let idle: Channel<Int64> = Channel<Int64>(1);
+    select {
+        | v: Int64 <- idle.recv() => print_int(v),
+        | default => print_int(-2)
+    }
+
+    // Nothing ever arrives -> the timeout arm wins.
+    select {
+        | v: Int64 <- idle.recv() => print_int(v),
+        | timeout(30) => print_int(-3)
+    }
+}

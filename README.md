@@ -35,7 +35,8 @@ plain native binaries.
 - Generic functions: `@fn identity<T>(x: T) -> T` — monomorphization, type inference
   by argument and `let` annotations, nested types (`Option<T>`, `List<T>`)
 - Concurrency (M:N worker pool): `@fn async`, lazy handles `Async<T>`, `spawn`/`await`,
-  typed channels `Channel<T>(capacity)`, `send`/`recv`/`close`
+  typed channels `Channel<T>(capacity)`, `send`/`recv`/`close`, `select` over
+  recv/await with `timeout(ms)`/`default` arms
 - Built-in test framework: `@test`, asserts, `glyphc test`
 - `glyphc fmt`: comment-preserving canonical indentation + `--check`/`--write`
 
@@ -215,7 +216,8 @@ Notes:
 - The use-after-free / double-free detector is statement-flow based and does not
   track aliases: `let y = xs; xs.free(); y.len()` is not yet caught, and a free
   inside a `match` arm is treated as having happened after the `match`
-- Concurrency: no GC, `select`, or timeouts; async generic functions unsupported
+- Concurrency: no GC; async generic functions unsupported; `select` arms must be
+  `recv()`/`await` and its wait loop polls at ~1 ms granularity
 - LSP server is experimental
 
 ## License

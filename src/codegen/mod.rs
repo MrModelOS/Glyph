@@ -129,6 +129,7 @@ impl CCodegen {
         writeln!(self.output, "#include <math.h>").unwrap();
         writeln!(self.output, "#include <pthread.h>").unwrap();
         writeln!(self.output, "#include <unistd.h>").unwrap();
+        writeln!(self.output, "#include <time.h>").unwrap();
         writeln!(self.output, "#include <sys/stat.h>").unwrap();
         writeln!(self.output, "#include <setjmp.h>").unwrap();
         writeln!(self.output, "").unwrap();
@@ -169,9 +170,11 @@ impl CCodegen {
         writeln!(self.output, "void* glyph_async_create(void* (*run)(void*), void* args);").unwrap();
         writeln!(self.output, "void glyph_async_spawn(void* handle);").unwrap();
         writeln!(self.output, "void* glyph_async_await(void* handle);").unwrap();
+        writeln!(self.output, "int glyph_async_ready(void* handle);").unwrap();
         writeln!(self.output, "void* glyph_channel_create(int64_t capacity);").unwrap();
         writeln!(self.output, "int glyph_channel_send(void* channel, void* payload);").unwrap();
         writeln!(self.output, "void* glyph_channel_recv(void* channel);").unwrap();
+        writeln!(self.output, "int glyph_channel_recv_ready(void* channel);").unwrap();
         writeln!(self.output, "void glyph_channel_close(void* channel);").unwrap();
         writeln!(self.output, "").unwrap();
 
@@ -998,6 +1001,255 @@ impl CCodegen {
         Ok(())
     }
 
+    /// Emit a `select` statement: wait for the first ready recv/await event,
+    /// a timeout, or an immediate default arm (poll-based, ~1ms quantum).
+    fn emit_select(&mut self, arms: &[SelectArm]) -> Result<(), CodegenError> {
+        let n = arms
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.event,
+                    SelectEvent::Recv { .. } | SelectEvent::Await { .. }
+                )
+            })
+            .count();
+        let too = arms
+            .iter()
+            .position(|a| matches!(a.event, SelectEvent::Timeout(_)));
+        let def = arms
+            .iter()
+            .position(|a| matches!(a.event, SelectEvent::Default));
+
+        self.emit_indent();
+        writeln!(self.output, "{{").unwrap();
+        self.indent += 1;
+
+        self.emit_indent();
+        writeln!(self.output, "int _si = -1;").unwrap();
+        self.emit_indent();
+        writeln!(self.output, "int _stidx = {};", too.map(|i| i as i32).unwrap_or(-1)).unwrap();
+        self.emit_indent();
+        writeln!(self.output, "int _sdidx = {};", def.map(|i| i as i32).unwrap_or(-1)).unwrap();
+        if too.is_some() {
+            self.emit_indent();
+            write!(self.output, "int64_t _sdel = (").unwrap();
+            if let SelectEvent::Timeout(ms) = &arms[too.unwrap()].event {
+                self.emit_expression(ms)?;
+            }
+            writeln!(self.output, ");").unwrap();
+        }
+        if n > 0 {
+            self.emit_indent();
+            writeln!(self.output, "void* _so[{}];", n).unwrap();
+            self.emit_indent();
+            writeln!(self.output, "int _tk[{}];", n).unwrap();
+            self.emit_indent();
+            writeln!(self.output, "int _sk;").unwrap();
+            let mut e = 0usize;
+            for arm in arms {
+                match &arm.event {
+                    SelectEvent::Recv { target, .. } => {
+                        let object = match target {
+                            Expr::MethodCall { object, .. } => object,
+                            _ => unreachable!("parser only builds Recv from method calls"),
+                        };
+                        self.emit_indent();
+                        write!(self.output, "_so[{}] = (void*)(", e).unwrap();
+                        self.emit_expression(object)?;
+                        writeln!(self.output, "); _tk[{}] = 0;", e).unwrap();
+                        e += 1;
+                    }
+                    SelectEvent::Await { target, .. } => {
+                        let inner = match target {
+                            Expr::Await(inner) => inner,
+                            _ => unreachable!("parser only builds Await from await expressions"),
+                        };
+                        self.emit_indent();
+                        write!(self.output, "_so[{}] = (void*)(", e).unwrap();
+                        self.emit_expression(inner)?;
+                        writeln!(
+                            self.output,
+                            "); _tk[{}] = 1; glyph_async_spawn(_so[{}]);",
+                            e, e
+                        )
+                        .unwrap();
+                        e += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Wait: a default arm fires immediately when nothing is ready.
+        self.emit_indent();
+        writeln!(self.output, "if (_sdidx >= 0) {{").unwrap();
+        self.indent += 1;
+        if n > 0 {
+            self.emit_indent();
+            writeln!(self.output, "for (_sk = 0; _sk < {}; _sk++) {{", n).unwrap();
+            self.indent += 1;
+            self.emit_indent();
+            writeln!(
+                self.output,
+                "if (_tk[_sk] ? glyph_async_ready(_so[_sk]) : glyph_channel_recv_ready(_so[_sk])) {{ _si = _sk; break; }}"
+            )
+            .unwrap();
+            self.indent -= 1;
+            self.emit_indent();
+            writeln!(self.output, "}}").unwrap();
+            self.emit_indent();
+            writeln!(self.output, "if (_si < 0) _si = _sdidx;").unwrap();
+        } else {
+            self.emit_indent();
+            writeln!(self.output, "_si = _sdidx;").unwrap();
+        }
+        self.indent -= 1;
+        self.emit_indent();
+        writeln!(self.output, "}} else if ({} > 0 || _stidx >= 0) {{", n).unwrap();
+        self.indent += 1;
+        if too.is_some() {
+            self.emit_indent();
+            writeln!(self.output, "struct timespec _t0; clock_gettime(CLOCK_MONOTONIC, &_t0);").unwrap();
+        }
+        self.emit_indent();
+        writeln!(self.output, "for (;;) {{").unwrap();
+        self.indent += 1;
+        if n > 0 {
+            self.emit_indent();
+            writeln!(self.output, "for (_sk = 0; _sk < {}; _sk++) {{", n).unwrap();
+            self.indent += 1;
+            self.emit_indent();
+            writeln!(
+                self.output,
+                "if (_tk[_sk] ? glyph_async_ready(_so[_sk]) : glyph_channel_recv_ready(_so[_sk])) {{ _si = _sk; break; }}"
+            )
+            .unwrap();
+            self.indent -= 1;
+            self.emit_indent();
+            writeln!(self.output, "}}").unwrap();
+            self.emit_indent();
+            writeln!(self.output, "if (_si >= 0) break;").unwrap();
+        }
+        if too.is_some() {
+            self.emit_indent();
+            writeln!(self.output, "struct timespec _t1; clock_gettime(CLOCK_MONOTONIC, &_t1);")
+                .unwrap();
+            self.emit_indent();
+            writeln!(
+                self.output,
+                "int64_t _el = (_t1.tv_sec - _t0.tv_sec) * 1000 + (_t1.tv_nsec - _t0.tv_nsec) / 1000000;"
+            )
+            .unwrap();
+            self.emit_indent();
+            writeln!(self.output, "if (_el >= _sdel) {{ _si = _stidx; break; }}").unwrap();
+        }
+        self.emit_indent();
+        writeln!(self.output, "struct timespec _ts = {{ 0, 1000000 }};").unwrap();
+        self.emit_indent();
+        writeln!(self.output, "nanosleep(&_ts, NULL);").unwrap();
+        self.indent -= 1;
+        self.emit_indent();
+        writeln!(self.output, "}}").unwrap();
+        self.indent -= 1;
+        self.emit_indent();
+        writeln!(self.output, "}}").unwrap();
+
+        // Dispatch to the fired arm.
+        self.emit_indent();
+        writeln!(self.output, "switch (_si) {{").unwrap();
+        self.indent += 1;
+        self.emit_indent();
+        writeln!(self.output, "case -1:").unwrap();
+        self.indent += 1;
+        self.emit_indent();
+        writeln!(self.output, "break;").unwrap();
+        self.indent -= 1;
+
+        let mut e = 0usize;
+        for (i, arm) in arms.iter().enumerate() {
+            self.emit_indent();
+            writeln!(self.output, "case {}: {{", i).unwrap();
+            self.indent += 1;
+            match &arm.event {
+                SelectEvent::Recv { name, ty, .. } => {
+                    let c = self.type_to_c(ty);
+                    self.emit_indent();
+                    writeln!(self.output, "{} {};", c, name).unwrap();
+                    self.emit_indent();
+                    writeln!(self.output, "void* _sv = glyph_channel_recv(_so[{}]);", e).unwrap();
+                    self.emit_indent();
+                    writeln!(self.output, "if (_sv) {{").unwrap();
+                    self.indent += 1;
+                    if Self::type_is_pointer_payload(ty) {
+                        // Channels carry pointer-payload values directly (not
+                        // boxed): the recv result already IS the value (char*,
+                        // GlyphAsync*, ...).
+                        self.emit_indent();
+                        writeln!(self.output, "{} = ({})(_sv);", name, c).unwrap();
+                    } else {
+                        self.emit_indent();
+                        writeln!(self.output, "{} = *(({}*)_sv); free(_sv);", name, c).unwrap();
+                    }
+                    self.indent -= 1;
+                    self.emit_indent();
+                    writeln!(self.output, "}} else {{").unwrap();
+                    self.emit_indent();
+                    writeln!(self.output, "{} = ({}){{ 0 }};", name, c).unwrap();
+                    self.emit_indent();
+                    writeln!(self.output, "}}").unwrap();
+                    e += 1;
+                }
+                SelectEvent::Await { name, ty, .. } => {
+                    let c = self.type_to_c(ty);
+                    self.emit_indent();
+                    writeln!(self.output, "{} {};", c, name).unwrap();
+                    if Self::type_is_cell_payload(ty) {
+                        self.emit_indent();
+                        writeln!(
+                            self.output,
+                            "void* _ap = glyph_async_await(_so[{}]); {} = _ap ? *(({}*)_ap) : 0;",
+                            e, name, c
+                        )
+                        .unwrap();
+                    } else if Self::type_is_pointer_payload(ty) {
+                        self.emit_indent();
+                        writeln!(
+                            self.output,
+                            "{} = ({})glyph_async_await(_so[{}]);",
+                            name, c, e
+                        )
+                        .unwrap();
+                    } else {
+                        self.emit_indent();
+                        writeln!(
+                            self.output,
+                            "void* _ap = glyph_async_await(_so[{}]); {} = *(({}*)_ap);",
+                            e, name, c
+                        )
+                        .unwrap();
+                    }
+                    e += 1;
+                }
+                _ => {}
+            }
+            for stmt in &arm.body {
+                self.emit_statement(stmt)?;
+            }
+            self.indent -= 1;
+            self.emit_indent();
+            writeln!(self.output, "}} break;").unwrap();
+            let _ = i;
+        }
+
+        self.indent -= 1;
+        self.emit_indent();
+        writeln!(self.output, "}}").unwrap();
+        self.indent -= 1;
+        self.emit_indent();
+        writeln!(self.output, "}}").unwrap();
+        Ok(())
+    }
+
     /// Infer the element type of a list literal from its first element.
     /// Falls back to Int64 (matches the historic hardcoded behavior).
     fn infer_list_elem(&self, elems: &[Expr]) -> Type {
@@ -1375,6 +1627,9 @@ impl CCodegen {
                 write!(self.output, "glyph_async_spawn(").unwrap();
                 self.emit_expression(expr)?;
                 writeln!(self.output, ");").unwrap();
+            }
+            Stmt::Select { arms, .. } => {
+                self.emit_select(arms)?;
             }
         }
 
@@ -2363,6 +2618,25 @@ Stmt::Assignment { target, value, .. } => {
                     self.scan_stmts(else_body, var_types, active_subst)?;
                 }
                 Stmt::Spawn(_, e) => self.scan_expr(e, var_types, active_subst)?,
+                Stmt::Select { arms, .. } => {
+                    for arm in arms {
+                        match &arm.event {
+                            SelectEvent::Recv { target, name, ty, .. } => {
+                                self.scan_expr(target, var_types, active_subst)?;
+                                var_types.insert(name.clone(), ty.clone());
+                            }
+                            SelectEvent::Await { target, name, ty, .. } => {
+                                self.scan_expr(target, var_types, active_subst)?;
+                                var_types.insert(name.clone(), ty.clone());
+                            }
+                            SelectEvent::Timeout(ms) => {
+                                self.scan_expr(ms, var_types, active_subst)?;
+                            }
+                            SelectEvent::Default => {}
+                        }
+                        self.scan_stmts(&arm.body, var_types, active_subst)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -3165,6 +3439,13 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "    pthread_mutex_unlock(&h->mu);").unwrap();
         writeln!(self.output, "    return r;").unwrap();
         writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "int glyph_async_ready(void* hp) {{").unwrap();
+        writeln!(self.output, "    GlyphAsync* h = (GlyphAsync*)hp;").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&h->mu);").unwrap();
+        writeln!(self.output, "    int r = h->done;").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&h->mu);").unwrap();
+        writeln!(self.output, "    return r;").unwrap();
+        writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "typedef struct {{").unwrap();
@@ -3198,7 +3479,7 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "    if (ch->closed) {{ pthread_mutex_unlock(&ch->mu); return 0; }}").unwrap();
         writeln!(self.output, "    if (ch->cap <= 0) {{").unwrap();
         writeln!(self.output, "        for (;;) {{").unwrap();
-        writeln!(self.output, "            if (ch->receiver_waiting > 0 && !ch->has_slot) {{").unwrap();
+        writeln!(self.output, "            if (!ch->has_slot && !ch->closed) {{").unwrap();
         writeln!(self.output, "                ch->slot = p; ch->has_slot = 1; ch->taken = 0;").unwrap();
         writeln!(self.output, "                pthread_cond_signal(&ch->not_empty);").unwrap();
         writeln!(self.output, "                while (!ch->taken && !ch->closed) pthread_cond_wait(&ch->not_full, &ch->mu);").unwrap();
@@ -3253,6 +3534,13 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "    pthread_cond_broadcast(&ch->not_full);").unwrap();
         writeln!(self.output, "    pthread_cond_broadcast(&ch->not_empty);").unwrap();
         writeln!(self.output, "    pthread_mutex_unlock(&ch->mu);").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "int glyph_channel_recv_ready(void* cp) {{").unwrap();
+        writeln!(self.output, "    GlyphChannel* ch = (GlyphChannel*)cp;").unwrap();
+        writeln!(self.output, "    pthread_mutex_lock(&ch->mu);").unwrap();
+        writeln!(self.output, "    int r = ch->closed || ch->len > 0 || (ch->cap <= 0 && ch->has_slot);").unwrap();
+        writeln!(self.output, "    pthread_mutex_unlock(&ch->mu);").unwrap();
+        writeln!(self.output, "    return r;").unwrap();
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
@@ -3784,6 +4072,37 @@ mod tests {
             !c.contains("pthread_create(&h->thread"),
             "spawn must not create a per-task thread"
         );
+    }
+
+    #[test]
+    fn select_emits_ready_checks_and_switch_dispatch() {
+        let c = compile_fragment(
+            "@fn async slow() -> Int64 { return 1; }\n\
+             @fn main() -> Void {\n\
+             \x20   let ch: Channel<Int64> = Channel<Int64>(4);\n\
+             \x20   let h: Async<Int64> = slow();\n\
+             \x20   select {\n\
+             \x20       | v: Int64 <- ch.recv() => print_int(v),\n\
+             \x20       | v: Int64 <- h await => print_int(v),\n\
+             \x20       | timeout(50) => print_int(-1)\n\
+             \x20   }\n\
+             }",
+        );
+        assert!(
+            c.contains("glyph_channel_recv_ready(_so["),
+            "select must poll channel readiness"
+        );
+        assert!(
+            c.contains("glyph_async_ready(_so["),
+            "select must poll handle readiness"
+        );
+        assert!(
+            c.contains("glyph_async_spawn(_so["),
+            "unstarted await handles must be spawned by select"
+        );
+        assert!(c.contains("switch (_si)"), "select dispatches on the fired arm");
+        assert!(c.contains("glyph_channel_recv(_so[0])"), "recv arm drains the channel");
+        assert!(c.contains("glyph_async_await(_so[1])"), "await arm reads the result");
     }
 
     #[test]

@@ -35,6 +35,11 @@ pub enum Token {
     Inline,
     NoStd,
 
+    // Select
+    Select,
+    Timeout,
+    Default,
+
     // Declarations
     Const,
     Pub,
@@ -81,6 +86,7 @@ pub enum Token {
     Colon,
     DoubleColon,
     Arrow,        // ->
+    ArrowLeft,    // <-
     Pipe,         // |
     FatArrow,     // =>
     AmpAmp,       // &&
@@ -408,6 +414,9 @@ impl Lexer {
                             if self.peek() == Some('=') {
                                 self.advance();
                                 Token::Le
+                            } else if self.peek() == Some('-') {
+                                self.advance();
+                                Token::ArrowLeft
                             } else {
                                 Token::Lt
                             }
@@ -521,6 +530,9 @@ impl Lexer {
                                 "continue" => Token::Continue,
                                 "spawn" => Token::Spawn,
                                 "await" => Token::Await,
+                                "select" => Token::Select,
+                                "timeout" => Token::Timeout,
+                                "default" => Token::Default,
                                 "async" => Token::Async,
                                 "true" => Token::True,
                                 "false" => Token::False,

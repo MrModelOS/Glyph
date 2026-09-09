@@ -641,6 +641,7 @@ impl Parser {
             Token::For => self.parse_for(),
             Token::Guard => self.parse_guard(),
             Token::Spawn => self.parse_spawn(),
+            Token::Select => self.parse_select(),
             Token::If => {
                 let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
                 let expr = self.parse_if()?;
@@ -777,6 +778,62 @@ impl Parser {
         self.expect(&Token::Semicolon)?;
 
         Ok(Stmt::Spawn(loc, expr))
+    }
+
+    fn parse_select(&mut self) -> Result<Stmt, ParseError> {
+        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        self.advance(); // consume select
+        self.expect(&Token::LBrace)?;
+
+        let mut arms = Vec::new();
+        while self.peek() != &Token::RBrace {
+            self.expect(&Token::Pipe)?;
+
+            let event = if self.peek() == &Token::Timeout {
+                self.advance();
+                self.expect(&Token::LParen)?;
+                let ms = self.parse_expression()?;
+                self.expect(&Token::RParen)?;
+                SelectEvent::Timeout(ms)
+            } else if self.peek() == &Token::Default {
+                self.advance();
+                SelectEvent::Default
+            } else {
+                let name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let ty = self.parse_type()?;
+                self.expect(&Token::ArrowLeft)?;
+                let target = self.parse_expression()?;
+                if matches!(&target, Expr::Await(_)) {
+                    SelectEvent::Await { target, name, ty }
+                } else {
+                    SelectEvent::Recv { target, name, ty }
+                }
+            };
+
+self.expect(&Token::FatArrow)?;
+            let body = if self.peek() == &Token::LBrace {
+                self.advance();
+                let b = self.parse_block()?;
+                self.expect(&Token::RBrace)?;
+                b
+            } else {
+                let loc = LineCol {
+                    line: self.peek_spanned().line,
+                    col: self.peek_spanned().column,
+                };
+                let expr = self.parse_expression()?;
+                vec![Stmt::Expression(loc, expr)]
+            };
+            arms.push(SelectArm { event, body });
+
+            if self.peek() == &Token::Comma {
+                self.advance();
+            }
+        }
+
+        self.expect(&Token::RBrace)?;
+        Ok(Stmt::Select { loc, arms })
     }
 
     fn parse_expression_statement(&mut self) -> Result<Stmt, ParseError> {

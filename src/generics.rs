@@ -123,6 +123,31 @@ pub fn substitute_stmt(subst: &HashMap<String, Type>, stmt: &Stmt) -> Stmt {
             else_body: else_body.iter().map(|s| substitute_stmt(subst, s)).collect(),
         },
         Stmt::Spawn(loc, e) => Stmt::Spawn(*loc, substitute_expr(subst, e)),
+        Stmt::Select { loc, arms } => Stmt::Select {
+            loc: *loc,
+            arms: arms
+                .iter()
+                .map(|arm| SelectArm {
+                    event: match &arm.event {
+                        SelectEvent::Recv { target, name, ty } => SelectEvent::Recv {
+                            target: substitute_expr(subst, target),
+                            name: name.clone(),
+                            ty: substitute_type(subst, ty),
+                        },
+                        SelectEvent::Await { target, name, ty } => SelectEvent::Await {
+                            target: substitute_expr(subst, target),
+                            name: name.clone(),
+                            ty: substitute_type(subst, ty),
+                        },
+                        SelectEvent::Timeout(ms) => {
+                            SelectEvent::Timeout(substitute_expr(subst, ms))
+                        }
+                        SelectEvent::Default => SelectEvent::Default,
+                    },
+                    body: arm.body.iter().map(|s| substitute_stmt(subst, s)).collect(),
+                })
+                .collect(),
+        },
     }
 }
 

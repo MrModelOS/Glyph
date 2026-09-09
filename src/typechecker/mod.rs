@@ -76,6 +76,18 @@ pub enum TypeError {
 
     #[error("double free: '{name}' was already freed")]
     DoubleFree { name: String },
+
+    #[error("select arm must be a 'ch.recv()' or 'h await' expression, found {0}")]
+    SelectEventShape(String),
+
+    #[error("select: at most one timeout arm and one default arm allowed")]
+    SelectArmConflict,
+
+    #[error("select: timeout expression must be Int64")]
+    SelectTimeoutType,
+
+    #[error("select bind type mismatch: expected {expected}, found {found}")]
+    SelectBindMismatch { expected: String, found: String },
 }
 
 #[derive(Debug, Clone)]
@@ -804,6 +816,111 @@ impl TypeChecker {
                     }),
                 }
             }
+            Stmt::Select { arms, .. } => {
+                let mut saw_timeout = false;
+                let mut saw_default = false;
+                let mut saw_event = false;
+                for arm in arms {
+                    match &arm.event {
+                        SelectEvent::Recv { target, name, ty } => {
+                            saw_event = true;
+                            let (object, method, args) = match target {
+                                Expr::MethodCall {
+                                    object, method, args, ..
+                                } => (object, method, args),
+                                other => {
+                                    return Err(TypeError::SelectEventShape(
+                                        format!("{}", Self::expr_shape(other)),
+                                    ))
+                                }
+                            };
+                            if method != "recv" || !args.is_empty() {
+                                return Err(TypeError::SelectEventShape(format!(
+                                    "{}{}",
+                                    method,
+                                    if args.is_empty() { "()" } else { "(...)" }
+                                )));
+                            }
+                            let obj_ty = self.check_expression(object)?;
+                            let elem = match &obj_ty {
+                                Type::Channel(inner) => (**inner).clone(),
+                                other => {
+                                    return Err(TypeError::SelectEventShape(format!("{}", other)))
+                                }
+                            };
+                            if !self.types_compatible(&elem, ty) {
+                                return Err(TypeError::SelectBindMismatch {
+                                    expected: format!("{}", ty),
+                                    found: format!("{}", elem),
+                                });
+                            }
+                            let mut arm_env = self.env.clone();
+                            arm_env.define_variable(name.clone(), ty.clone());
+                            self.check_block_swapped(arm_env, &arm.body, None)?;
+                        }
+                        SelectEvent::Await { target, name, ty } => {
+                            saw_event = true;
+                            if !matches!(target, Expr::Await(_)) {
+                                return Err(TypeError::SelectEventShape(
+                                    "an await expression".to_string(),
+                                ));
+                            }
+                            let inner_ty = self.check_expression(target)?;
+                            if matches!(inner_ty, Type::Void) {
+                                return Err(TypeError::SelectEventShape(
+                                    "a non-Void await".to_string(),
+                                ));
+                            }
+                            if !self.types_compatible(&inner_ty, ty) {
+                                return Err(TypeError::SelectBindMismatch {
+                                    expected: format!("{}", ty),
+                                    found: format!("{}", inner_ty),
+                                });
+                            }
+                            let mut arm_env = self.env.clone();
+                            arm_env.define_variable(name.clone(), ty.clone());
+                            self.check_block_swapped(arm_env, &arm.body, None)?;
+                        }
+                        SelectEvent::Timeout(ms) => {
+                            if saw_timeout || saw_default {
+                                return Err(TypeError::SelectArmConflict);
+                            }
+                            saw_timeout = true;
+                            let ms_ty = self.check_expression(ms)?;
+                            if !matches!(ms_ty, Type::Int64) {
+                                return Err(TypeError::SelectTimeoutType);
+                            }
+                            let arm_env = self.env.clone();
+                            self.check_block_swapped(arm_env, &arm.body, None)?;
+                        }
+                        SelectEvent::Default => {
+                            if saw_default || saw_timeout {
+                                return Err(TypeError::SelectArmConflict);
+                            }
+                            saw_default = true;
+                            let arm_env = self.env.clone();
+                            self.check_block_swapped(arm_env, &arm.body, None)?;
+                        }
+                    }
+                }
+                let _ = saw_event; // a select may legitimately be empty-bodied
+                Ok(None)
+            }
+        }
+    }
+
+    fn expr_shape(expr: &Expr) -> String {
+        match expr {
+            Expr::Identifier(n) => n.clone(),
+            Expr::MethodCall { object, method, .. } => {
+                format!("{}.{}()", Self::expr_shape(object), method)
+            }
+            Expr::Await(_) => "await".to_string(),
+            Expr::IntegerLiteral(v) => v.to_string(),
+            Expr::FloatLiteral(v) => v.to_string(),
+            Expr::StringLiteral(s) => format!("\"{}\"", s),
+            Expr::BoolLiteral(b) => b.to_string(),
+            _ => "<expression>".to_string(),
         }
     }
 
@@ -2184,6 +2301,85 @@ mod tests {
     let x: Int64 = 5;
     let y: Int64 = x await;
     print_int(y);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_select_valid() {
+        let input = "\
+@fn async slow() -> Int64 { return 1; }
+@fn main() -> Void {
+    let ch: Channel<Int64> = Channel<Int64>(4);
+    let h: Async<Int64> = slow();
+    select {
+        | v: Int64 <- ch.recv() => print_int(v),
+        | v: Int64 <- h await => print_int(v),
+        | timeout(50) => print_int(-1)
+    }
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_type_check_select_arm_must_be_recv_or_await() {
+        let input = "\
+@fn async slow() -> Int64 { return 1; }
+@fn main() -> Void {
+    let ch: Channel<Int64> = Channel<Int64>(4);
+    select {
+        | v: Int64 <- slow() => print_int(v)
+    }
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_select_bind_type_mismatch() {
+        let input = "\
+@fn main() -> Void {
+    let ch: Channel<Int64> = Channel<Int64>(4);
+    select {
+        | v: Float64 <- ch.recv() => print_float(v)
+    }
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_check_select_two_timeouts() {
+        let input = "\
+@fn main() -> Void {
+    let ch: Channel<Int64> = Channel<Int64>(4);
+    select {
+        | v: Int64 <- ch.recv() => print_int(v),
+        | timeout(10) => print_int(-1),
+        | timeout(20) => print_int(-2)
+    }
 }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize().unwrap();

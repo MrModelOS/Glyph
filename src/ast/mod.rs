@@ -307,6 +307,40 @@ pub enum Stmt {
 
     // Spawn statement
     Spawn(LineCol, Expr),
+
+    // Select statement: waits for one of several recv/await events, a
+    // timeout, or a default arm that fires immediately when nothing is ready.
+    Select {
+        loc: LineCol,
+        arms: Vec<SelectArm>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectEvent {
+    /// Fire when the channel can hand over a value without blocking.
+    /// `name: ty` binds the received value inside the arm body.
+    Recv {
+        target: Expr,
+        name: String,
+        ty: Type,
+    },
+    /// Fire when the async handle has completed; binds its result.
+    Await {
+        target: Expr,
+        name: String,
+        ty: Type,
+    },
+    /// Fire when `ms` milliseconds have passed and no event fired yet.
+    Timeout(Expr),
+    /// Fire immediately when no other arm is ready right now.
+    Default,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectArm {
+    pub event: SelectEvent,
+    pub body: Vec<Stmt>,
 }
 
 impl Stmt {
@@ -324,6 +358,7 @@ impl Stmt {
             | Stmt::Continue(l)
             | Stmt::Loop(l, _)
             | Stmt::Spawn(l, _) => *l,
+            Stmt::Select { loc, .. } => *loc,
         }
     }
 }
