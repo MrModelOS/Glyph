@@ -411,22 +411,25 @@ Glyph компилируется в C и наследует C-тулчейн: с
 
 ```
 workload        glyph      c      rust   ratio (glyph/c)
-loop_sum         468ms   466ms   541ms        1.00x
-list_append      267ms    62ms    59ms        4.31x
-map_put_get      346ms   152ms   169ms        2.28x
+loop_sum         440ms   443ms   503ms        0.99x
+list_append       35ms    29ms    44ms        1.21x
+map_put_get      157ms   144ms   161ms        1.09x
 ```
 
-Железо: 11th Gen Intel Core i5-1135G7, 2026-09-08. `loop_sum` суммирует
+Железо: 11th Gen Intel Core i5-1135G7, 2026-09-09. `loop_sum` суммирует
 `i % 7` по runtime-размеру (400M итераций); `list_append` — 20M int64 в
 динамический массив и суммирование; `map_put_get` — 2M put+get строковых ключей
 (разброс по 100 ключам). Воспроизводится `bench/gen.sh` + `bench/run.sh`.
 
-- `loop_sum` — паритет с C (движок цикла/арифметика идентичны gcc; 541ms Rust —
-  это cost-model LLVM на `%`)
-- `list_append` платит за refcount и resize-копирование `GlyphList`
-  (безопасный growable-список с runtime-проверками): ~4x к ручному realloc
-- `map_put_get` — ~2.3x к C-мапе того же размера: хэширование строк + коробки
-  `Option`-payload при каждой операции; будущая арена-мапа сократит разрыв
+- `loop_sum` — паритет с C (движок цикла/арифметика идентичны gcc)
+- `list_append` — refcounted growable-буфер с геометрическим удвоением ёмкости:
+  append амортизированно O(1), как у C-массива; рантайм-хелперы `static inline`,
+  горячая петля инлайнится в обычный store. Остаток ~20% — refcount и служебные
+  поля ёмкости.
+- `map_put_get` — геометрический рехеш при load factor > 0.75; временные ключи,
+  построенные `int_to_string`/`++`/`substring`..., освобождаются сразу после
+  put/get/index (раньше они текли). 1.09x — между C (фиксированные 256 корзин)
+  и Rust hashbrown.
 
 ## Ограничения
 

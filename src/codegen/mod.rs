@@ -176,26 +176,26 @@ impl CCodegen {
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Lists (fat struct over a heap buffer)").unwrap();
-        writeln!(self.output, "typedef struct {{ void* data; int64_t len; int64_t elem_size; int64_t* refs; }} GlyphList;").unwrap();
-        writeln!(self.output, "GlyphList glyph_list_new(int64_t elem_size, int64_t len);").unwrap();
-        writeln!(self.output, "void glyph_list_append(GlyphList* list, const void* value);").unwrap();
-        writeln!(self.output, "GlyphList glyph_list_concat(GlyphList a, GlyphList b);").unwrap();
-        writeln!(self.output, "GlyphList glyph_range_i64(int64_t start, int64_t end, int inclusive);").unwrap();
-        writeln!(self.output, "GlyphList glyph_list_slice(GlyphList list, int64_t start, int64_t end, int inclusive);").unwrap();
-        writeln!(self.output, "int glyph_list_eq(GlyphList a, GlyphList b);").unwrap();
-        writeln!(self.output, "void glyph_list_retain(GlyphList *l);").unwrap();
-        writeln!(self.output, "void glyph_list_free(GlyphList *l);").unwrap();
+        writeln!(self.output, "typedef struct {{ void* data; int64_t len; int64_t cap; int64_t elem_size; int64_t* refs; }} GlyphList;").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_list_new(int64_t elem_size, int64_t len);").unwrap();
+        writeln!(self.output, "static inline void glyph_list_append(GlyphList* list, const void* value);").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_list_concat(GlyphList a, GlyphList b);").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_range_i64(int64_t start, int64_t end, int inclusive);").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_list_slice(GlyphList list, int64_t start, int64_t end, int inclusive);").unwrap();
+        writeln!(self.output, "static inline int glyph_list_eq(GlyphList a, GlyphList b);").unwrap();
+        writeln!(self.output, "static inline void glyph_list_retain(GlyphList *l);").unwrap();
+        writeln!(self.output, "static inline void glyph_list_free(GlyphList *l);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Maps (chained hash table over string keys)").unwrap();
         writeln!(self.output, "typedef struct GlyphMapEntry {{ char* key; void* value; struct GlyphMapEntry* next; }} GlyphMapEntry;").unwrap();
         writeln!(self.output, "typedef struct {{ GlyphMapEntry** buckets; int64_t bucket_count; int64_t size; int64_t elem_size; }} GlyphMap;").unwrap();
-        writeln!(self.output, "GlyphMap glyph_map_new(int64_t elem_size);").unwrap();
-        writeln!(self.output, "void glyph_map_put(GlyphMap* m, const char* key, const void* value);").unwrap();
-        writeln!(self.output, "void* glyph_map_get(GlyphMap* m, const char* key);").unwrap();
-        writeln!(self.output, "void* glyph_map_get_or_abort(GlyphMap* m, const char* key, const char* msg);").unwrap();
-        writeln!(self.output, "int glyph_map_contains(GlyphMap* m, const char* key);").unwrap();
-        writeln!(self.output, "void glyph_map_free(GlyphMap* m);").unwrap();
+        writeln!(self.output, "static inline GlyphMap glyph_map_new(int64_t elem_size);").unwrap();
+        writeln!(self.output, "static inline void glyph_map_put(GlyphMap* m, const char* key, const void* value);").unwrap();
+        writeln!(self.output, "static inline void* glyph_map_get(GlyphMap* m, const char* key);").unwrap();
+        writeln!(self.output, "static inline void* glyph_map_get_or_abort(GlyphMap* m, const char* key, const char* msg);").unwrap();
+        writeln!(self.output, "static inline int glyph_map_contains(GlyphMap* m, const char* key);").unwrap();
+        writeln!(self.output, "static inline void glyph_map_free(GlyphMap* m);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Math").unwrap();
@@ -1705,16 +1705,15 @@ impl CCodegen {
                             if let Some(value) = args.get(1) {
                                 write!(self.output, "({{ {} _mv = ", c_val).unwrap();
                                 self.emit_expression(value)?;
-                                write!(self.output, "; glyph_map_put(&(").unwrap();
+                                write!(self.output, "; char* _gk = (char*)(").unwrap();
+                                self.emit_expression(key)?;
+                                write!(self.output, "); glyph_map_put(&(").unwrap();
                                 self.emit_expression(object)?;
-                                write!(self.output, "), ").unwrap();
-                                if let Expr::StringLiteral(s) = key {
-write!(self.output, "\"{}\", &_mv); }})", Self::escape_c_string(s)).unwrap();
-                                } else {
-                                    write!(self.output, "((const char*)(").unwrap();
-                                    self.emit_expression(key)?;
-                                    write!(self.output, ")), &_mv); }})").unwrap();
+                                write!(self.output, "), (const char*)_gk, &_mv); ").unwrap();
+                                if self.is_fresh_owned_string(key) {
+                                    write!(self.output, "free((void*)_gk); ").unwrap();
                                 }
+                                write!(self.output, "}})").unwrap();
                             } else {
                                 return Err(CodegenError::UnresolvedMethod {
                                     method: "put".to_string(),
@@ -1732,13 +1731,11 @@ write!(self.output, "\"{}\", &_mv); }})", Self::escape_c_string(s)).unwrap();
                         if let Some(key) = args.first() {
                             write!(self.output, "({{ __auto_type _m = ").unwrap();
                             self.emit_expression(object)?;
-                            write!(self.output, "; void* _vp = glyph_map_get(&_m, ").unwrap();
-                            if let Expr::StringLiteral(s) = key {
-                                write!(self.output, "\"{}\");", Self::escape_c_string(s)).unwrap();
-                            } else {
-                                write!(self.output, "(const char*)(").unwrap();
-                                self.emit_expression(key)?;
-                                write!(self.output, "));").unwrap();
+                            write!(self.output, "; char* _gk = (char*)(").unwrap();
+                            self.emit_expression(key)?;
+                            write!(self.output, "); void* _vp = glyph_map_get(&_m, (const char*)_gk); ").unwrap();
+                            if self.is_fresh_owned_string(key) {
+                                write!(self.output, "free((void*)_gk); ").unwrap();
                             }
                             write!(self.output, " ({{ __auto_type _p = _vp ? (*({}*)_vp) : ({}){{0}}; glyph_box_construct(_vp != NULL, &_p, sizeof(_p)); }}); }})", c_val, c_val).unwrap();
                         } else {
@@ -1840,26 +1837,21 @@ write!(self.output, "\"{}\", &_mv); }})", Self::escape_c_string(s)).unwrap();
                     Some(val) => {
                         // GlyphMap lookup: missing key aborts with a message.
                         let c_val = self.type_to_c(&val);
+                        let has_fresh_key = self.is_fresh_owned_string(index);
                         write!(self.output, "({{ __auto_type _m = ").unwrap();
                         self.emit_expression(object)?;
-                        if let Expr::StringLiteral(s) = index.as_ref() {
-                            write!(
-                                self.output,
-                                "; void* _vp = glyph_map_get_or_abort(&_m, \"{}\", \"map key not found\"); __auto_type _r = *(({}*)_vp); _r; }})",
-                                Self::escape_c_string(s),
-                                c_val
-                            )
-                            .unwrap();
-                        } else {
-                            write!(self.output, "; const char* _k = (const char*)(").unwrap();
-                            self.emit_expression(index)?;
-                            write!(
-                                self.output,
-                                "); void* _vp = glyph_map_get_or_abort(&_m, _k, \"map key not found\"); __auto_type _r = *(({}*)_vp); _r; }})",
-                                c_val
-                            )
-                            .unwrap();
+                        write!(self.output, "; const char* _k = (const char*)(").unwrap();
+                        self.emit_expression(index)?;
+                        write!(self.output, "); void* _vp = glyph_map_get_or_abort(&_m, _k, \"map key not found\"); ").unwrap();
+                        if has_fresh_key {
+                            write!(self.output, "free((void*)_k); ").unwrap();
                         }
+                        write!(
+                            self.output,
+                            "__auto_type _r = *(({}*)_vp); _r; }})",
+                            c_val
+                        )
+                        .unwrap();
                         return Ok(());
                     }
                     None => {}
@@ -3264,43 +3256,55 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
-        writeln!(self.output, "GlyphList glyph_list_new(int64_t elem_size, int64_t len) {{").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_list_new(int64_t elem_size, int64_t len) {{").unwrap();
         writeln!(self.output, "    GlyphList l;").unwrap();
         writeln!(self.output, "    if (len < 0) len = 0;").unwrap();
         writeln!(self.output, "    if (elem_size < 1) elem_size = 1;").unwrap();
-        writeln!(self.output, "    l.len = len; l.elem_size = elem_size;").unwrap();
+        writeln!(self.output, "    l.len = len; l.cap = len; l.elem_size = elem_size;").unwrap();
         writeln!(self.output, "    l.data = len > 0 ? malloc((size_t)(elem_size * len)) : NULL;").unwrap();
         writeln!(self.output, "    l.refs = (int64_t*)malloc(sizeof(int64_t)); *l.refs = 1;").unwrap();
         writeln!(self.output, "    return l;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "void glyph_list_retain(GlyphList* l) {{").unwrap();
+        writeln!(self.output, "static inline void glyph_list_retain(GlyphList* l) {{").unwrap();
         writeln!(self.output, "    if (l && l->refs) (*l->refs)++;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "void glyph_list_append(GlyphList* l, const void* v) {{").unwrap();
+        writeln!(self.output, "static inline void glyph_list_append(GlyphList* l, const void* v) {{").unwrap();
         writeln!(self.output, "    int64_t old_len = l->len;").unwrap();
+        writeln!(self.output, "    int64_t new_len = old_len + 1;").unwrap();
         writeln!(self.output, "    if (!l->refs) {{").unwrap();
-        writeln!(self.output, "        GlyphList n = glyph_list_new(l->elem_size, old_len + 1);").unwrap();
-        writeln!(self.output, "        if (old_len > 0) memcpy(n.data, l->data, (size_t)(old_len * l->elem_size));").unwrap();
+        writeln!(self.output, "        // Degenerate list (e.g. after free): rebuild from scratch.").unwrap();
+        writeln!(self.output, "        GlyphList n = glyph_list_new(l->elem_size, new_len);").unwrap();
         writeln!(self.output, "        *l = n;").unwrap();
-        writeln!(self.output, "    }} else if (*l->refs > 1) {{").unwrap();
+        writeln!(self.output, "        memcpy((char*)l->data + old_len * l->elem_size, v, (size_t)l->elem_size);").unwrap();
+        writeln!(self.output, "        l->len = new_len;").unwrap();
+        writeln!(self.output, "        return;").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "    if (*l->refs > 1) {{").unwrap();
         writeln!(self.output, "        // Copy-on-write: other copies share the old buffer.").unwrap();
-        writeln!(self.output, "        GlyphList n = glyph_list_new(l->elem_size, old_len + 1);").unwrap();
+        writeln!(self.output, "        int64_t ncap = l->cap > 0 ? l->cap * 2 : 4;").unwrap();
+        writeln!(self.output, "        if (ncap < new_len) ncap = new_len;").unwrap();
+        writeln!(self.output, "        GlyphList n = glyph_list_new(l->elem_size, old_len);").unwrap();
+        writeln!(self.output, "        n.cap = ncap;").unwrap();
+        writeln!(self.output, "        n.data = realloc(n.data, (size_t)(ncap * l->elem_size));").unwrap();
         writeln!(self.output, "        if (old_len > 0) memcpy(n.data, l->data, (size_t)(old_len * l->elem_size));").unwrap();
         writeln!(self.output, "        (*l->refs)--;").unwrap();
         writeln!(self.output, "        *l = n;").unwrap();
-        writeln!(self.output, "    }} else {{").unwrap();
-        writeln!(self.output, "        l->data = realloc(l->data, (size_t)((old_len + 1) * l->elem_size));").unwrap();
+        writeln!(self.output, "    }} else if (l->cap < new_len) {{").unwrap();
+        writeln!(self.output, "        int64_t ncap = l->cap > 0 ? l->cap * 2 : 4;").unwrap();
+        writeln!(self.output, "        if (ncap < new_len) ncap = new_len;").unwrap();
+        writeln!(self.output, "        l->data = realloc(l->data, (size_t)(ncap * l->elem_size));").unwrap();
+        writeln!(self.output, "        l->cap = ncap;").unwrap();
         writeln!(self.output, "    }}").unwrap();
         writeln!(self.output, "    memcpy((char*)l->data + old_len * l->elem_size, v, (size_t)l->elem_size);").unwrap();
-        writeln!(self.output, "    l->len = old_len + 1;").unwrap();
+        writeln!(self.output, "    l->len = new_len;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "GlyphList glyph_list_concat(GlyphList a, GlyphList b) {{").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_list_concat(GlyphList a, GlyphList b) {{").unwrap();
         writeln!(self.output, "    GlyphList l = glyph_list_new(a.elem_size, a.len + b.len);").unwrap();
         writeln!(self.output, "    memcpy(l.data, a.data, (size_t)(a.len * a.elem_size));").unwrap();
         writeln!(self.output, "    memcpy((char*)l.data + a.len * a.elem_size, b.data, (size_t)(b.len * b.elem_size));").unwrap();
         writeln!(self.output, "    return l;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "GlyphList glyph_range_i64(int64_t s, int64_t e, int inclusive) {{").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_range_i64(int64_t s, int64_t e, int inclusive) {{").unwrap();
         writeln!(self.output, "    int64_t n = e - s + (inclusive ? 1 : 0);").unwrap();
         writeln!(self.output, "    if (n < 0) n = 0;").unwrap();
         writeln!(self.output, "    GlyphList l = glyph_list_new(8, n);").unwrap();
@@ -3308,7 +3312,7 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "    for (int64_t i = 0; i < n; i++) d[i] = s + i;").unwrap();
         writeln!(self.output, "    return l;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "GlyphList glyph_list_slice(GlyphList l, int64_t s, int64_t e, int inclusive) {{").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_list_slice(GlyphList l, int64_t s, int64_t e, int inclusive) {{").unwrap();
         writeln!(self.output, "    int64_t end = inclusive ? e + 1 : e;").unwrap();
         writeln!(self.output, "    if (s < 0) s = 0;").unwrap();
         writeln!(self.output, "    if (end > l.len) end = l.len;").unwrap();
@@ -3318,13 +3322,13 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "    if (n > 0) memcpy(o.data, (char*)l.data + s * l.elem_size, (size_t)(n * l.elem_size));").unwrap();
         writeln!(self.output, "    return o;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "int glyph_list_eq(GlyphList a, GlyphList b) {{").unwrap();
+        writeln!(self.output, "static inline int glyph_list_eq(GlyphList a, GlyphList b) {{").unwrap();
         writeln!(self.output, "    if (a.len != b.len || a.elem_size != b.elem_size) return 0;").unwrap();
         writeln!(self.output, "    if (a.len == 0) return 1;").unwrap();
         writeln!(self.output, "    if (!a.data || !b.data) return 0;").unwrap();
         writeln!(self.output, "    return memcmp(a.data, b.data, (size_t)(a.len * a.elem_size)) == 0;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "void glyph_list_free(GlyphList *l) {{").unwrap();
+        writeln!(self.output, "static inline void glyph_list_free(GlyphList *l) {{").unwrap();
         writeln!(self.output, "    if (!l) return;").unwrap();
         writeln!(self.output, "    if (l->refs && --(*l->refs) <= 0) {{").unwrap();
         writeln!(self.output, "        free(l->data);").unwrap();
@@ -3337,27 +3341,40 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "").unwrap();
 
         // Maps: FNV-1a hash over string keys, chained buckets, memcpy values.
-        writeln!(self.output, "static uint64_t glyph_map_hash(const char* k) {{").unwrap();
+        writeln!(self.output, "static inline uint64_t glyph_map_hash(const char* k) {{").unwrap();
         writeln!(self.output, "    uint64_t h = 14695981039346656037ULL;").unwrap();
         writeln!(self.output, "    while (*k) {{ h ^= (uint8_t)*k++; h *= 1099511628211ULL; }}").unwrap();
         writeln!(self.output, "    return h;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "GlyphMap glyph_map_new(int64_t elem_size) {{").unwrap();
+        writeln!(self.output, "static inline GlyphMap glyph_map_new(int64_t elem_size) {{").unwrap();
         writeln!(self.output, "    GlyphMap m;").unwrap();
         writeln!(self.output, "    m.bucket_count = 16;").unwrap();
         writeln!(self.output, "    m.buckets = (GlyphMapEntry**)calloc((size_t)m.bucket_count, sizeof(GlyphMapEntry*));").unwrap();
         writeln!(self.output, "    m.size = 0; m.elem_size = elem_size < 1 ? 1 : elem_size;").unwrap();
         writeln!(self.output, "    return m;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "static GlyphMapEntry* glyph_map_find(GlyphMap* m, const char* key) {{").unwrap();
+        writeln!(self.output, "static inline GlyphMapEntry* glyph_map_find(GlyphMap* m, const char* key) {{").unwrap();
         writeln!(self.output, "    uint64_t i = glyph_map_hash(key) & (m->bucket_count - 1);").unwrap();
         writeln!(self.output, "    for (GlyphMapEntry* e = m->buckets[i]; e; e = e->next)").unwrap();
         writeln!(self.output, "        if (strcmp(e->key, key) == 0) return e;").unwrap();
         writeln!(self.output, "    return NULL;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "void glyph_map_put(GlyphMap* m, const char* key, const void* value) {{").unwrap();
+        writeln!(self.output, "static inline void glyph_map_grow(GlyphMap* m) {{").unwrap();
+        writeln!(self.output, "    int64_t nb = m->bucket_count * 2;").unwrap();
+        writeln!(self.output, "    GlyphMapEntry** nbk = (GlyphMapEntry**)calloc((size_t)nb, sizeof(GlyphMapEntry*));").unwrap();
+        writeln!(self.output, "    for (int64_t i = 0; i < m->bucket_count; i++) {{").unwrap();
+        writeln!(self.output, "        GlyphMapEntry* e = m->buckets[i];").unwrap();
+        writeln!(self.output, "        while (e) {{ GlyphMapEntry* n = e->next;").unwrap();
+        writeln!(self.output, "            uint64_t bi = glyph_map_hash(e->key) & (nb - 1);").unwrap();
+        writeln!(self.output, "            e->next = nbk[bi]; nbk[bi] = e; e = n; }}").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "    free(m->buckets);").unwrap();
+        writeln!(self.output, "    m->buckets = nbk; m->bucket_count = nb;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "static inline void glyph_map_put(GlyphMap* m, const char* key, const void* value) {{").unwrap();
         writeln!(self.output, "    GlyphMapEntry* e = glyph_map_find(m, key);").unwrap();
         writeln!(self.output, "    if (!e) {{").unwrap();
+        writeln!(self.output, "        if ((m->size + 1) * 4 > m->bucket_count * 3) glyph_map_grow(m);").unwrap();
         writeln!(self.output, "        uint64_t i = glyph_map_hash(key) & (m->bucket_count - 1);").unwrap();
         writeln!(self.output, "        e = (GlyphMapEntry*)malloc(sizeof(GlyphMapEntry));").unwrap();
         writeln!(self.output, "        e->key = strdup(key);").unwrap();
@@ -3367,19 +3384,19 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "    }}").unwrap();
         writeln!(self.output, "    memcpy(e->value, value, (size_t)m->elem_size);").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "void* glyph_map_get(GlyphMap* m, const char* key) {{").unwrap();
+        writeln!(self.output, "static inline void* glyph_map_get(GlyphMap* m, const char* key) {{").unwrap();
         writeln!(self.output, "    GlyphMapEntry* e = glyph_map_find(m, key);").unwrap();
         writeln!(self.output, "    return e ? e->value : NULL;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "void* glyph_map_get_or_abort(GlyphMap* m, const char* key, const char* msg) {{").unwrap();
+        writeln!(self.output, "static inline void* glyph_map_get_or_abort(GlyphMap* m, const char* key, const char* msg) {{").unwrap();
         writeln!(self.output, "    void* v = glyph_map_get(m, key);").unwrap();
         writeln!(self.output, "    if (!v) {{ fprintf(stderr, \"%s\\n\", msg); exit(1); }}").unwrap();
         writeln!(self.output, "    return v;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "int glyph_map_contains(GlyphMap* m, const char* key) {{").unwrap();
+        writeln!(self.output, "static inline int glyph_map_contains(GlyphMap* m, const char* key) {{").unwrap();
         writeln!(self.output, "    return glyph_map_find(m, key) != NULL;").unwrap();
         writeln!(self.output, "}}").unwrap();
-        writeln!(self.output, "void glyph_map_free(GlyphMap* m) {{").unwrap();
+        writeln!(self.output, "static inline void glyph_map_free(GlyphMap* m) {{").unwrap();
         writeln!(self.output, "    if (!m) return;").unwrap();
         writeln!(self.output, "    for (int64_t i = 0; i < m->bucket_count; i++) {{").unwrap();
         writeln!(self.output, "        GlyphMapEntry* e = m->buckets[i];").unwrap();
@@ -3500,6 +3517,41 @@ fn is_existing_list_expr(expr: &Expr) -> bool {
             | Expr::IndexAccess { .. }
             | Expr::Ref(_)
     )
+}
+
+/// True when `e` produces a freshly-allocated owned String: builtins that
+/// build a new `char*` (int_to_string, substring, read_line, ...) or string
+/// concatenation. Such temporaries are safe to free once a builtin key
+/// operation (put/get/index) consumes their value; identifiers, literals and
+/// values read out of collections alias an existing owner and must not be freed.
+fn is_fresh_owned_string(&self, expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { name, .. } => match name.as_ref() {
+            Expr::Identifier(f) => matches!(
+                f.as_str(),
+                "read_line"
+                    | "concat"
+                    | "int_to_string"
+                    | "float_to_string"
+                    | "bool_to_string"
+                    | "substring"
+                    | "trim"
+                    | "to_upper"
+                    | "to_lower"
+                    | "file_read"
+            ),
+            _ => false,
+        },
+        Expr::BinaryOp {
+            op: BinOp::Concat,
+            ..
+        } => true,
+        Expr::BinaryOp {
+            op: BinOp::Add,
+            ..
+        } => matches!(self.resolved_expr_type(expr), Some(Type::String)),
+        _ => false,
+    }
 }
 
 fn map_builtin_name_static(name: &str) -> Option<&'static str> {
@@ -3732,5 +3784,41 @@ mod tests {
             !c.contains("pthread_create(&h->thread"),
             "spawn must not create a per-task thread"
         );
+    }
+
+    #[test]
+    fn map_keys_freed_when_built_from_fresh_temporaries() {
+        let c = compile_fragment(
+            "@fn main() -> Void {\n\
+             \x20   let m: Map<String, Int64> = #{ \"seed\": 0 };\n\
+             \x20   m.put(int_to_string(1), 2);\n\
+             \x20   m.put(\"lit\", 3);\n\
+             \x20   let k: String = int_to_string(4);\n\
+             \x20   m.put(k, 5);\n\
+             \x20   print_int(m[int_to_string(6)]);\n\
+             \x20   m.free();\n\
+             }",
+        );
+        let i2s_put = c
+            .lines()
+            .find(|l| l.contains("glyph_int_to_string(1)") && l.contains("glyph_map_put"))
+            .expect("put with int_to_string key must be emitted");
+        assert!(
+            i2s_put.contains("free((void*)_gk)"),
+            "fresh key temporary must be freed: {i2s_put}"
+        );
+        let ident_put = c
+            .lines()
+            .find(|l| l.contains("glyph_map_put") && l.contains("_gk = (char*)(k)"))
+            .expect("put with identifier key must be emitted");
+        assert!(
+            !ident_put.contains("free("),
+            "identifier key must NOT be freed: {ident_put}"
+        );
+        let idx = c
+            .lines()
+            .find(|l| l.contains("_k") && l.contains("glyph_map_get_or_abort"))
+            .expect("index lookup with fresh key must be emitted");
+        assert!(idx.contains("free((void*)_k)"), "index fresh key must be freed");
     }
 }

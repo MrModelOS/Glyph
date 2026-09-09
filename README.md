@@ -179,12 +179,12 @@ LTO, meant to show the ballpark, not to be a rigorous benchmark).
 
 ```
 workload        glyph      c      rust   ratio (glyph/c)
-loop_sum         468ms   466ms   541ms        1.00x
-list_append      267ms    62ms    59ms        4.31x
-map_put_get      346ms   152ms   169ms        2.28x
+loop_sum         440ms   443ms   503ms        0.99x
+list_append       35ms    29ms    44ms        1.21x
+map_put_get      157ms   144ms   161ms        1.09x
 ```
 
-Hardware: 11th Gen Intel Core i5-1135G7, 2026-09-08. `loop_sum` sums
+Hardware: 11th Gen Intel Core i5-1135G7, 2026-09-09. `loop_sum` sums
 `i % 7` over a runtime size (400M iterations); `list_append` appends 20M
 int64s to a dynamic array and sums them; `map_put_get` puts+gets 2M string-key
 entries into a 100-key churn. Reproduce with `bench/gen.sh` + `bench/run.sh`.
@@ -192,14 +192,16 @@ entries into a 100-key churn. Reproduce with `bench/gen.sh` + `bench/run.sh`.
 Notes:
 
 - `loop_sum` is at parity with C — the loop, modulo and integer arithmetic emit
-  the same code gcc would write by hand. (Rust's 541ms vs 466ms is LLVM's
-  cost-model on `%`.)
-- `list_append` pays for the refcounted, resize-copying generic list
-  (`GlyphList`). A handwritten realloc'd C array is ~4x faster — expected for
-  a safe growable array with runtime element-type checks.
-- `map_put_get` is ~2.3x C's open-addressing-of-the-same-size map: string-hash
-  plus per-op heap boxes of `Option` payloads. `free()` on the map releases the
-  C memory; a future arena/stable-address map would close the gap.
+  the same code gcc would write by hand.
+- `list_append` uses a refcounted growable buffer that doubles its capacity
+  geometrically, so appends amortize to O(1) like C's `realloc` array; the
+  runtime helpers are `static inline`, so the hot loop inlines to a plain
+  store. The ~20% residual is the refcount and capacity bookkeeping.
+- `map_put_get` rehashes geometrically (load factor ≤ 0.75) and keys built
+  temporarily by `int_to_string`/`++`/`substring`... are freed right after the
+  put/get/index call, so the string churn that used to be measured (and leak)
+  is gone. At 1.09x it sits between C (fixed 256 buckets) and Rust's
+  hashbrown.
 
 ## Limitations
 
