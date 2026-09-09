@@ -55,6 +55,7 @@ pub fn substitute_params(subst: &HashMap<String, Type>, params: &[FunctionParam]
         .iter()
         .map(|p| FunctionParam {
             name: p.name.clone(),
+            name_span: p.name_span,
             ty: substitute_type(subst, &p.ty),
             is_move: p.is_move,
         })
@@ -66,12 +67,14 @@ pub fn substitute_stmt(subst: &HashMap<String, Type>, stmt: &Stmt) -> Stmt {
         Stmt::Let {
             loc,
             name,
+            name_span,
             ty,
             value,
             mutable,
         } => Stmt::Let {
             loc: *loc,
             name: name.clone(),
+            name_span: *name_span,
             ty: ty.as_ref().map(|t| substitute_type(subst, t)),
             value: substitute_expr(subst, value),
             mutable: *mutable,
@@ -105,11 +108,13 @@ pub fn substitute_stmt(subst: &HashMap<String, Type>, stmt: &Stmt) -> Stmt {
         Stmt::For {
             loc,
             variable,
+            var_span,
             iterable,
             body,
         } => Stmt::For {
             loc: *loc,
             variable: variable.clone(),
+            var_span: *var_span,
             iterable: substitute_expr(subst, iterable),
             body: body.iter().map(|s| substitute_stmt(subst, s)).collect(),
         },

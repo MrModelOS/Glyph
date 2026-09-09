@@ -103,6 +103,31 @@ impl Parser {
         }
     }
 
+    /// Expect an identifier and return it together with the exact span of the
+    /// name token (used for definition lookup / go-to-definition).
+    fn expect_ident_span(&mut self) -> Result<(String, Span), ParseError> {
+        let spanned = self.peek_spanned().clone();
+        match &spanned.token {
+            Token::Identifier(name) => {
+                self.advance();
+                let span = Span::new(
+                    LineCol { line: spanned.line, col: spanned.column },
+                    LineCol {
+                        line: spanned.end_line,
+                        col: spanned.end_column,
+                    },
+                );
+                Ok((name.clone(), span))
+            }
+            _ => Err(ParseError::UnexpectedToken(
+                spanned.token.clone(),
+                spanned.line,
+                spanned.column,
+                "identifier".to_string(),
+            )),
+        }
+    }
+
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
         let mut items = Vec::new();
 
@@ -194,7 +219,7 @@ impl Parser {
             false
         };
 
-        let name = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident_span()?;
 
         // Optional type parameters: <T, K>
         let mut type_params = Vec::new();
@@ -218,6 +243,7 @@ impl Parser {
 
         Ok(TopLevelItem::Function {
             name,
+            name_span,
             type_params,
             params: rest.params,
             return_type: rest.return_type,
@@ -249,12 +275,13 @@ impl Parser {
                     false
                 };
 
-                let param_name = self.expect_ident()?;
+                let (param_name, param_span) = self.expect_ident_span()?;
                 self.expect(&Token::Colon)?;
                 let param_type = self.parse_type()?;
 
                 params.push(FunctionParam {
                     name: param_name,
+                    name_span: param_span,
                     ty: param_type,
                     is_move,
                 });
@@ -290,7 +317,7 @@ impl Parser {
 
     fn parse_struct_with_vis(&mut self, pub_vis: Visibility) -> Result<TopLevelItem, ParseError> {
         self.advance(); // consume @struct
-        let name = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident_span()?;
         self.expect(&Token::LBrace)?;
 
         let mut fields = Vec::new();
@@ -307,7 +334,7 @@ impl Parser {
 
         self.expect(&Token::RBrace)?;
 
-        Ok(TopLevelItem::Struct { name, fields, pub_vis })
+        Ok(TopLevelItem::Struct { name, name_span, fields, pub_vis })
     }
 
     fn parse_enum_with_vis(&mut self, pub_vis: Visibility) -> Result<TopLevelItem, ParseError> {
@@ -390,11 +417,12 @@ impl Parser {
             let mut params = Vec::new();
             if self.peek() != &Token::RParen {
                 loop {
-                    let param_name = self.expect_ident()?;
+                    let (param_name, param_span) = self.expect_ident_span()?;
                     self.expect(&Token::Colon)?;
                     let param_type = self.parse_type()?;
                     params.push(FunctionParam {
                         name: param_name,
+                        name_span: param_span,
                         ty: param_type,
                         is_move: false,
                     });
@@ -450,11 +478,12 @@ impl Parser {
             let mut params = Vec::new();
             if self.peek() != &Token::RParen {
                 loop {
-                    let param_name = self.expect_ident()?;
+                    let (param_name, param_span) = self.expect_ident_span()?;
                     self.expect(&Token::Colon)?;
                     let param_type = self.parse_type()?;
                     params.push(FunctionParam {
                         name: param_name,
+                        name_span: param_span,
                         ty: param_type,
                         is_move: false,
                     });
@@ -686,7 +715,7 @@ impl Parser {
             false
         };
 
-        let name = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident_span()?;
 
         let ty = if self.peek() == &Token::Colon {
             self.advance();
@@ -702,6 +731,7 @@ impl Parser {
         Ok(Stmt::Let {
             loc,
             name,
+            name_span,
             ty,
             value,
             mutable,
@@ -751,6 +781,7 @@ impl Parser {
     fn parse_for(&mut self) -> Result<Stmt, ParseError> {
         let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
         self.advance(); // consume for
+        let spanned_for_var = self.peek_spanned().clone();
         let variable = self.expect_ident()?;
         self.expect(&Token::In)?;
         let iterable = self.parse_expression()?;
@@ -760,7 +791,14 @@ impl Parser {
 
         Ok(Stmt::For {
             loc,
-            variable,
+            variable: variable.clone(),
+            var_span: Span::new(
+                LineCol { line: spanned_for_var.line, col: spanned_for_var.column },
+                LineCol {
+                    line: spanned_for_var.end_line,
+                    col: spanned_for_var.end_column,
+                },
+            ),
             iterable,
             body,
         })

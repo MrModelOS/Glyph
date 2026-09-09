@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Read, Write};
 
 use serde_json::{json, Value};
 
-use crate::ast::{LineCol, Program, Span};
+use crate::ast::{LineCol, Program, Span, Stmt, TopLevelItem};
 use crate::lexer::{Lexer, LexerError};
 use crate::parser::{ParseError, Parser};
 use crate::typechecker::{TypeChecker, TypeError};
@@ -17,6 +17,7 @@ pub struct LspServer {
 #[derive(Debug)]
 struct Document {
     content: String,
+    program: Option<Program>,
 }
 
 impl LspServer {
@@ -92,6 +93,7 @@ impl LspServer {
                                 "triggerCharacters": ["@", "#", ".", ":"]
                             },
                             "hoverProvider": true,
+                            "definitionProvider": true,
                             "diagnosticProvider": {
                                 "interFileDependencies": false,
                                 "workspaceDiagnostics": false
@@ -131,6 +133,7 @@ impl LspServer {
                 .to_string(),
             ],
             "textDocument/hover" => self.handle_hover(msg),
+            "textDocument/definition" => self.handle_definition(msg),
             "textDocument/diagnostic" => {
                 let items = self.collect_diagnostics(msg);
                 vec![
@@ -159,8 +162,12 @@ impl LspServer {
             .and_then(|c| c.as_str())
             .or_else(|| msg.pointer("/params/textDocument/text").and_then(|t| t.as_str()))
             .unwrap_or("");
+        let program = Lexer::new(content)
+            .tokenize()
+            .ok()
+            .and_then(|tokens| Parser::new(tokens).parse_program().ok());
         self.documents
-            .insert(uri.to_string(), Document { content: content.to_string() });
+            .insert(uri.to_string(), Document { content: content.to_string(), program });
     }
 
     /// Compute diagnostics for every open document.
@@ -192,6 +199,38 @@ impl LspServer {
                 "params": {
                     "uri": uri,
                     "diagnostics": items
+                }
+            })
+            .to_string(),
+        ]
+    }
+
+    fn handle_definition(&mut self, msg: &Value) -> Vec<String> {
+        let Some(uri) = msg.pointer("/params/textDocument/uri").and_then(|u| u.as_str()) else {
+            return Vec::new();
+        };
+        let line = msg.pointer("/params/position/line").and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+        let character = msg
+            .pointer("/params/position/character")
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0) as usize;
+        let Some(doc) = self.documents.get(uri) else {
+            return Vec::new();
+        };
+        let Some(word) = word_at(&doc.content, line, character) else {
+            return Vec::new();
+        };
+        let Some(span) = resolve_definition(doc.program.as_ref(), (line, character), &word) else {
+            return Vec::new();
+        };
+
+        vec![
+            json!({
+                "jsonrpc": "2.0",
+                "id": msg.get("id").cloned().unwrap_or(Value::Null),
+                "result": {
+                    "uri": uri,
+                    "range": range_from(span.start, span.end)
                 }
             })
             .to_string(),
@@ -382,6 +421,142 @@ fn analyze(content: &str) -> Vec<Value> {
     out
 }
 
+#[derive(Debug, Clone)]
+struct Def {
+    name: String,
+    span: Span,
+    item: usize,
+    is_global: bool,
+}
+
+fn lc_le(a: &LineCol, b: &LineCol) -> bool {
+    a.line < b.line || (a.line == b.line && a.col <= b.col)
+}
+
+fn lc_gt(a: &LineCol, b: &LineCol) -> bool {
+    a.line > b.line || (a.line == b.line && a.col > b.col)
+}
+
+fn push_stmt_defs(defs: &mut Vec<Def>, item: usize, stmt: &Stmt) {
+    match stmt {
+        Stmt::Let { name, name_span, .. } => {
+            defs.push(Def { name: name.clone(), span: *name_span, item, is_global: false });
+        }
+        Stmt::For { variable, var_span, body, .. } => {
+            defs.push(Def { name: variable.clone(), span: *var_span, item, is_global: false });
+            for s in body {
+                push_stmt_defs(defs, item, s);
+            }
+        }
+        Stmt::Loop(_, body)
+        | Stmt::While { body, .. }
+        | Stmt::Guard { else_body: body, .. } => {
+            for s in body {
+                push_stmt_defs(defs, item, s);
+            }
+        }
+        Stmt::Select { arms, .. } => {
+            for arm in arms {
+                for s in &arm.body {
+                    push_stmt_defs(defs, item, s);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect, per top-level item, the definitions (function/struct names and
+/// any lexically-bound local names) together with the item start positions.
+fn collect_defs(program: &Program) -> (Vec<Def>, Vec<(usize, LineCol)>) {
+    let mut defs = Vec::new();
+    let mut items = Vec::new();
+
+    for (i, item) in program.items.iter().enumerate() {
+        match item {
+            TopLevelItem::Function { name, name_span, params, body, .. } => {
+                items.push((i, name_span.start));
+                defs.push(Def { name: name.clone(), span: *name_span, item: i, is_global: true });
+                for p in params {
+                    defs.push(Def { name: p.name.clone(), span: p.name_span, item: i, is_global: false });
+                }
+                for s in body {
+                    push_stmt_defs(&mut defs, i, s);
+                }
+            }
+            TopLevelItem::Struct { name, name_span, .. } => {
+                items.push((i, name_span.start));
+                defs.push(Def { name: name.clone(), span: *name_span, item: i, is_global: true });
+            }
+            TopLevelItem::Impl { methods, .. } => {
+                let start = methods
+                    .iter()
+                    .flat_map(|m| {
+                        m.params
+                            .iter()
+                            .map(|p| p.name_span.start)
+                            .chain(m.body.iter().map(|s| s.loc()))
+                    })
+                    .reduce(|acc, s| if lc_le(&s, &acc) { s } else { acc });
+                if let Some(s) = start {
+                    items.push((i, s));
+                }
+                for m in methods {
+                    for p in &m.params {
+                        defs.push(Def { name: p.name.clone(), span: p.name_span, item: i, is_global: false });
+                    }
+                    for s in &m.body {
+                        push_stmt_defs(&mut defs, i, s);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (defs, items)
+}
+
+/// Resolve the definition reachable from the identifier under the cursor.
+/// Local bindings (function params, lets) win if one is defined before the
+/// cursor in the enclosing top-level item; otherwise a matching
+/// function/struct name is returned.
+fn resolve_definition(program: Option<&Program>, pos: (usize, usize), word: &str) -> Option<Span> {
+    let program = program?;
+    let (defs, items) = collect_defs(program);
+    let pos_lc = LineCol { line: pos.0 + 1, col: pos.1 + 1 };
+
+    let cur = items
+        .iter()
+        .filter(|(_, s)| lc_le(s, &pos_lc))
+        .map(|(i, _)| *i)
+        .max();
+
+    let mut best: Option<Span> = None;
+    for d in defs.iter().filter(|d| !d.is_global && d.name == word) {
+        if let Some(ci) = cur {
+            if d.item != ci {
+                continue;
+            }
+        } else {
+            continue;
+        }
+        if lc_le(&d.span.start, &pos_lc)
+            && (best.is_none() || lc_gt(&d.span.start, &best.as_ref().unwrap().start))
+        {
+            best = Some(d.span);
+        }
+    }
+    if let Some(b) = best {
+        return Some(b);
+    }
+
+    defs.iter()
+        .filter(|d| d.is_global && d.name == word)
+        .map(|d| d.span)
+        .next()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +605,48 @@ mod tests {
         assert_eq!(word_at("let count: Int64 = 1;", 0, 6), Some("count".to_string()));
         assert_eq!(word_at("let count: Int64 = 1;", 0, 100), None);
         assert_eq!(word_at("select {", 0, 1), Some("select".to_string()));
+    }
+
+    #[test]
+    fn definition_resolves_local_let_and_param() {
+        let src = "@fn main() -> Void {\n    let x: Int64 = 5;\n    let y: Int64 = x + 1;\n}\n";
+        let program = Lexer::new(src).tokenize().ok()
+            .and_then(|t| Parser::new(t).parse_program().ok())
+            .unwrap();
+        // Cursor over the usage of `x` on line 3: resolves to the let on line 2.
+        let span = resolve_definition(Some(&program), (2, 21), "x").unwrap();
+        assert_eq!((span.start.line, span.start.col), (2, 9));
+        // Param-style: use a function argument in the body.
+        let src2 = "@fn add(a: Int64, b: Int64) -> Int64 {\n    return a + b;\n}\n";
+        let p2 = Lexer::new(src2).tokenize().ok()
+            .and_then(|t| Parser::new(t).parse_program().ok())
+            .unwrap();
+        let span2 = resolve_definition(Some(&p2), (1, 16), "a").unwrap();
+        assert_eq!((span2.start.line, span2.start.col), (1, 9));
+    }
+
+    #[test]
+    fn definition_resolves_function_name_and_ignores_foreign_let() {
+        let src = "@fn helper() -> Void {\n    let tmp: Int64 = 1;\n}\n@fn main() -> Void {\n    helper();\n}\n";
+        let program = Lexer::new(src).tokenize().ok()
+            .and_then(|t| Parser::new(t).parse_program().ok())
+            .unwrap();
+        // Global function reference.
+        let span = resolve_definition(Some(&program), (3, 6), "helper").unwrap();
+        assert_eq!((span.start.line, span.start.col), (1, 5));
+        // `tmp` from helper() must NOT resolve from a position in main().
+        assert!(resolve_definition(Some(&program), (3, 12), "tmp").is_none());
+        // Unknown word resolves to nothing, not a false positive.
+        assert!(resolve_definition(Some(&program), (3, 12), "zzz").is_none());
+    }
+
+    #[test]
+    fn definition_resolves_struct_name() {
+        let src = "@struct Point { x: Float64, y: Float64 }\n@fn main() -> Void {\n    let p: Point = point(1, 2);\n}\n";
+        let program = Lexer::new(src).tokenize().ok()
+            .and_then(|t| Parser::new(t).parse_program().ok())
+            .unwrap();
+        let span = resolve_definition(Some(&program), (2, 12), "Point").unwrap();
+        assert_eq!((span.start.line, span.start.col), (1, 9));
     }
 }

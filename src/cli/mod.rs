@@ -322,6 +322,7 @@ fn prefix_item(item: &TopLevelItem, prefix: &str) -> TopLevelItem {
     match item {
         TopLevelItem::Function {
             name,
+            name_span,
             type_params,
             params,
             return_type,
@@ -338,6 +339,7 @@ fn prefix_item(item: &TopLevelItem, prefix: &str) -> TopLevelItem {
             };
             TopLevelItem::Function {
                 name: new_name,
+                name_span: *name_span,
                 type_params: type_params.clone(),
                 params: params.clone(),
                 return_type: return_type.clone(),
@@ -347,9 +349,10 @@ fn prefix_item(item: &TopLevelItem, prefix: &str) -> TopLevelItem {
                 pub_vis: *pub_vis,
             }
         }
-        TopLevelItem::Struct { name, fields, pub_vis } => {
+        TopLevelItem::Struct { name, name_span, fields, pub_vis } => {
             TopLevelItem::Struct {
                 name: format!("{}{}", prefix, name),
+                name_span: *name_span,
                 fields: fields.clone(),
                 pub_vis: *pub_vis,
             }

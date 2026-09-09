@@ -332,6 +332,7 @@ pub enum Stmt {
     Let {
         loc: LineCol,
         name: String,
+        name_span: Span,
         ty: Option<Type>,
         value: Expr,
         mutable: bool,
@@ -370,6 +371,7 @@ pub enum Stmt {
     For {
         loc: LineCol,
         variable: String,
+        var_span: Span,
         iterable: Expr,
         body: Vec<Stmt>,
     },
@@ -442,6 +444,7 @@ impl Stmt {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionParam {
     pub name: String,
+    pub name_span: Span,
     pub ty: Type,
     pub is_move: bool,
 }
@@ -461,6 +464,7 @@ pub enum TopLevelItem {
     // Function declaration
     Function {
         name: String,
+        name_span: Span,
         type_params: Vec<String>,
         params: Vec<FunctionParam>,
         return_type: Option<Type>,
@@ -473,6 +477,7 @@ pub enum TopLevelItem {
     // Struct declaration
     Struct {
         name: String,
+        name_span: Span,
         fields: Vec<(String, Type)>,
         pub_vis: Visibility,
     },
