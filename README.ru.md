@@ -89,7 +89,7 @@ glyphc run --input hello.glyph
 | `build [--profile dev\|release]` | Собрать проект по `glyph.toml` |
 | `test [-i f.glyph] [--compiler gcc] [--opt -O2]` | Запустить `@test`-функции (без `-i` сканирует `./src`) |
 | `fmt --input f.glyph [--write] [--check]` | Канонические отступы/пробелы; комментарии сохраняются (по умолчанию — в stdout) |
-| `glyphc --lsp` | Экспериментальный LSP-сервер |
+| `glyphc --lsp` | LSP-сервер: живые диагностики (лексер/парсер/тайпчекер, полные спаны), hover и completion |
 
 Общие флаги: `-h/--help`, `-V/--version`.
 
@@ -456,7 +456,8 @@ map_put_get      157ms   144ms   161ms        1.09x
   функции (`in function 'foo': ...`) и полным спаном выражения
   (`line 3:20-26: Undefined function: foo`); AST-узлы выражений несут спаны
   (`src/ast`), у приготовления Statement-спанов остался только стартовый `line:col`
-- LSP-сервер — экспериментальный
+- LSP-сервер: диагностики лексера/парсера/тайпчекера с полными спанами,
+  hover под курсором и автодополнение ключевых слов; textDocumentSync = Full
 
 ## Лицензия
 

@@ -82,8 +82,7 @@ glyphc run --input hello.glyph
 | `build [--profile dev\|release]` | Build a project described by `glyph.toml` |
 | `fmt --input f.glyph [--write] [--check]` | Canonical indentation/whitespace; comments preserved (prints to stdout by default) |
 | `test [-i f.glyph] [--compiler gcc] [--opt -O2]` | Run `@test` functions (scans `./src` without `-i`) |
-| `glyphc --lsp` | Experimental LSP server |
-| `glyphc --lsp` | Experimental LSP server |
+| `glyphc --lsp` | LSP server: live diagnostics (lexer/parser/typechecker, full spans), hover and completion |
 
 Common flags: `-h/--help`, `-V/--version`.
 
@@ -218,7 +217,8 @@ Notes:
   inside a `match` arm is treated as having happened after the `match`
 - Concurrency: no GC; async generic functions unsupported; `select` arms must be
   `recv()`/`await` and its wait loop polls at ~1 ms granularity
-- LSP server is experimental
+- LSP server: diagnostics from lexer/parser/typechecker with full source spans,
+  cursor hover and keyword completion; textDocumentSync = Full
 
 ## License
 
