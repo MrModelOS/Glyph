@@ -57,16 +57,17 @@ impl std::fmt::Display for Type {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     // Literals
-    IntegerLiteral(i64),
-    FloatLiteral(f64),
-    StringLiteral(String),
-    BoolLiteral(bool),
+    IntegerLiteral(i64, Span),
+    FloatLiteral(f64, Span),
+    StringLiteral(String, Span),
+    BoolLiteral(bool, Span),
 
     // Identifier
-    Identifier(String),
+    Identifier(String, Span),
 
     // Binary operations
     BinaryOp {
+        span: Span,
         op: BinOp,
         left: Box<Expr>,
         right: Box<Expr>,
@@ -74,27 +75,31 @@ pub enum Expr {
 
     // Unary operations
     UnaryOp {
+        span: Span,
         op: UnaryOp,
         expr: Box<Expr>,
     },
 
     // Reference expression
-    Ref(Box<Expr>),
+    Ref(Box<Expr>, Span),
 
     // Cast expression (as)
     Cast {
+        span: Span,
         expr: Box<Expr>,
         target_type: Type,
     },
 
     // Function call
     FunctionCall {
+        span: Span,
         name: Box<Expr>,
         args: Vec<Expr>,
     },
 
     // Method call
     MethodCall {
+        span: Span,
         object: Box<Expr>,
         method: String,
         args: Vec<Expr>,
@@ -102,24 +107,28 @@ pub enum Expr {
 
     // Field access
     FieldAccess {
+        span: Span,
         object: Box<Expr>,
         field: String,
     },
 
     // Index access
     IndexAccess {
+        span: Span,
         object: Box<Expr>,
         index: Box<Expr>,
     },
 
     // Struct initialization
     StructInit {
+        span: Span,
         name: String,
         fields: Vec<(String, Expr)>,
     },
 
     // Enum variant initialization: Shape::Circle(5.0)
     EnumInit {
+        span: Span,
         enum_name: String,
         variant: String,
         args: Vec<Expr>,
@@ -127,41 +136,76 @@ pub enum Expr {
 
     // Match expression
     Match {
+        span: Span,
         expr: Box<Expr>,
         arms: Vec<MatchArm>,
     },
 
     // If expression
     If {
+        span: Span,
         condition: Box<Expr>,
         then_branch: Box<Expr>,
         else_branch: Option<Box<Expr>>,
     },
 
     // Block expression
-    Block(Vec<Stmt>),
+    Block(Vec<Stmt>, Span),
 
     // Range expression (..)
     Range {
+        span: Span,
         start: Box<Expr>,
         end: Box<Expr>,
         inclusive: bool,
     },
 
     // Array literal [1, 2, 3]
-    ArrayLiteral(Vec<Expr>),
+    ArrayLiteral(Vec<Expr>, Span),
 
     // Map literal: #{ "key": value, ... }
-    MapLiteral(Vec<(Expr, Expr)>),
+    MapLiteral(Vec<(Expr, Expr)>, Span),
 
     // Channel operations
     ChannelBounded {
+        span: Span,
         elem_type: Box<Type>,
         capacity: Box<Expr>,
     },
 
     // Await expression
-    Await(Box<Expr>),
+    Await(Box<Expr>, Span),
+}
+
+impl Expr {
+    /// Full source span of this expression.
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::IntegerLiteral(_, s)
+            | Expr::FloatLiteral(_, s)
+            | Expr::StringLiteral(_, s)
+            | Expr::BoolLiteral(_, s)
+            | Expr::Identifier(_, s)
+            | Expr::Ref(_, s)
+            | Expr::Block(_, s)
+            | Expr::ArrayLiteral(_, s)
+            | Expr::MapLiteral(_, s)
+            | Expr::Await(_, s) => *s,
+            Expr::BinaryOp { span: s, .. }
+            | Expr::UnaryOp { span: s, .. }
+            | Expr::Cast { span: s, .. }
+            | Expr::FunctionCall { span: s, .. }
+            | Expr::MethodCall { span: s, .. }
+            | Expr::FieldAccess { span: s, .. }
+            | Expr::IndexAccess { span: s, .. }
+            | Expr::StructInit { span: s, .. }
+            | Expr::EnumInit { span: s, .. }
+            | Expr::Match { span: s, .. }
+            | Expr::If { span: s, .. }
+            | Expr::Range { span: s, .. }
+            | Expr::ChannelBounded { span: s, .. } => *s,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,6 +291,38 @@ pub struct LineCol {
 impl std::fmt::Display for LineCol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.line, self.col)
+    }
+}
+
+/// A full source span: the start and end positions of an AST node.
+/// `end` is exclusive (one past the last character of the node).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Span {
+    pub start: LineCol,
+    pub end: LineCol,
+}
+
+impl Span {
+    pub fn new(start: LineCol, end: LineCol) -> Self {
+        Span { start, end }
+    }
+
+    /// A zero-width span pointing at a single position.
+    #[allow(dead_code)] // used by the LSP for cursor diagnostics.
+    pub fn point(loc: LineCol) -> Self {
+        Span { start: loc, end: loc }
+    }
+}
+
+impl std::fmt::Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.start == self.end {
+            write!(f, "{}:{}", self.start.line, self.start.col)
+        } else if self.start.line == self.end.line {
+            write!(f, "{}:{}-{}", self.start.line, self.start.col, self.end.col)
+        } else {
+            write!(f, "{}:{}-{}:{}", self.start.line, self.start.col, self.end.line, self.end.col)
+        }
     }
 }
 

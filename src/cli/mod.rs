@@ -446,11 +446,11 @@ fn remap_stmt(stmt: &mut Stmt, self_names: &HashSet<String>, prefix: &str) {
 
 fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
     match expr {
-        Expr::IntegerLiteral(_)
-        | Expr::FloatLiteral(_)
-        | Expr::StringLiteral(_)
-        | Expr::BoolLiteral(_) => {}
-        Expr::Identifier(name) => {
+        Expr::IntegerLiteral(_, _)
+        | Expr::FloatLiteral(_, _)
+        | Expr::StringLiteral(_, _)
+        | Expr::BoolLiteral(_, _) => {}
+        Expr::Identifier(name, _) => {
             if self_names.contains(name) {
                 *name = format!("{}{}", prefix, name);
             }
@@ -460,9 +460,9 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
             remap_expr(right, self_names, prefix);
         }
         Expr::UnaryOp { expr: inner, .. } => remap_expr(inner, self_names, prefix),
-        Expr::Ref(inner) => remap_expr(inner, self_names, prefix),
+        Expr::Ref(inner, _) => remap_expr(inner, self_names, prefix),
         Expr::Cast { expr: inner, .. } => remap_expr(inner, self_names, prefix),
-        Expr::FunctionCall { name, args } => {
+        Expr::FunctionCall { name, args, .. } => {
             remap_expr(name, self_names, prefix);
             for arg in args {
                 remap_expr(arg, self_names, prefix);
@@ -479,7 +479,7 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
             }
         }
         Expr::FieldAccess { object, .. } => remap_expr(object, self_names, prefix),
-        Expr::IndexAccess { object, index } => {
+        Expr::IndexAccess { object, index, .. } => {
             remap_expr(object, self_names, prefix);
             remap_expr(index, self_names, prefix);
         }
@@ -493,7 +493,7 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
                 remap_expr(arg, self_names, prefix);
             }
         }
-        Expr::Match { expr: inner, arms } => {
+        Expr::Match { expr: inner, arms, .. } => {
             remap_expr(inner, self_names, prefix);
             for arm in arms {
                 if let Some(guard) = &mut arm.guard {
@@ -506,6 +506,7 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
             condition,
             then_branch,
             else_branch,
+            ..
         } => {
             remap_expr(condition, self_names, prefix);
             remap_expr(then_branch, self_names, prefix);
@@ -513,7 +514,7 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
                 remap_expr(else_branch, self_names, prefix);
             }
         }
-        Expr::Block(stmts) => {
+        Expr::Block(stmts, _) => {
             for stmt in stmts {
                 remap_stmt(stmt, self_names, prefix);
             }
@@ -522,19 +523,19 @@ fn remap_expr(expr: &mut Expr, self_names: &HashSet<String>, prefix: &str) {
             remap_expr(start, self_names, prefix);
             remap_expr(end, self_names, prefix);
         }
-        Expr::ArrayLiteral(elements) => {
+        Expr::ArrayLiteral(elements, _) => {
             for elem in elements {
                 remap_expr(elem, self_names, prefix);
             }
         }
-        Expr::MapLiteral(pairs) => {
+        Expr::MapLiteral(pairs, _) => {
             for (k, v) in pairs {
                 remap_expr(k, self_names, prefix);
                 remap_expr(v, self_names, prefix);
             }
         }
         Expr::ChannelBounded { capacity, .. } => remap_expr(capacity, self_names, prefix),
-        Expr::Await(inner) => remap_expr(inner, self_names, prefix),
+        Expr::Await(inner, _) => remap_expr(inner, self_names, prefix),
     }
 }
 
@@ -542,6 +543,7 @@ fn type_error_span(e: &TypeError) -> Option<LineCol> {
     match e {
         TypeError::InFunction { source, .. } => type_error_span(source),
         TypeError::AtLine { loc, .. } => Some(*loc),
+        TypeError::AtSpan { span, .. } => Some(span.start),
         _ => None,
     }
 }

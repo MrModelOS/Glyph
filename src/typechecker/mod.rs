@@ -71,6 +71,12 @@ pub enum TypeError {
         source: Box<TypeError>,
     },
 
+    #[error("line {span}: {source}")]
+    AtSpan {
+        span: Span,
+        source: Box<TypeError>,
+    },
+
     #[error("use after free: '{name}' (list/map buffer was freed by .free())")]
     UseAfterFree { name: String },
 
@@ -585,9 +591,9 @@ impl TypeChecker {
             let result = match self.check_statement(stmt) {
                 Ok(r) => r,
                 Err(e) => {
-                    // Keep the innermost line: nested blocks would otherwise
+                    // Keep the innermost position: nested blocks would otherwise
                     // stack "line X: line Y:" wrappers.
-                    if matches!(e, TypeError::AtLine { .. }) {
+                    if matches!(e, TypeError::AtLine { .. } | TypeError::AtSpan { .. }) {
                         return Err(e);
                     }
                     return Err(TypeError::AtLine {
@@ -690,8 +696,8 @@ impl TypeChecker {
                 // A generic call with a declared type: infer remaining type
                 // parameters from the annotation (e.g. `E` in `-> Result<T, E>`).
                 let value_type = match (ty, value) {
-                    (Some(expected), Expr::FunctionCall { name: callee, args }) => {
-                        if let Expr::Identifier(n) = callee.as_ref() {
+                    (Some(expected), Expr::FunctionCall { name: callee, args, .. }) => {
+                        if let Expr::Identifier(n, _) = callee.as_ref() {
                             let fname = n.replace("::", "_");
                             if let Some(info) = self.generic_fns.get(&fname).cloned() {
                                 self.check_generic_call(&fname, &info, args, Some(expected))?
@@ -731,7 +737,7 @@ impl TypeChecker {
                 match target {
                     // Writing a whole variable does not read the old buffer:
                     // the freed mark is lifted before checking the RHS.
-                    Expr::Identifier(name) => {
+                    Expr::Identifier(name, _) => {
                         self.freed_vars.remove(name);
                     }
                     _ => {}
@@ -860,7 +866,7 @@ impl TypeChecker {
                         }
                         SelectEvent::Await { target, name, ty } => {
                             saw_event = true;
-                            if !matches!(target, Expr::Await(_)) {
+                            if !matches!(target, Expr::Await(_, _)) {
                                 return Err(TypeError::SelectEventShape(
                                     "an await expression".to_string(),
                                 ));
@@ -911,27 +917,41 @@ impl TypeChecker {
 
     fn expr_shape(expr: &Expr) -> String {
         match expr {
-            Expr::Identifier(n) => n.clone(),
+            Expr::Identifier(n, _) => n.clone(),
             Expr::MethodCall { object, method, .. } => {
                 format!("{}.{}()", Self::expr_shape(object), method)
             }
-            Expr::Await(_) => "await".to_string(),
-            Expr::IntegerLiteral(v) => v.to_string(),
-            Expr::FloatLiteral(v) => v.to_string(),
-            Expr::StringLiteral(s) => format!("\"{}\"", s),
-            Expr::BoolLiteral(b) => b.to_string(),
+            Expr::Await(_, _) => "await".to_string(),
+            Expr::IntegerLiteral(v, _) => v.to_string(),
+            Expr::FloatLiteral(v, _) => v.to_string(),
+            Expr::StringLiteral(s, _) => format!("\"{}\"", s),
+            Expr::BoolLiteral(b, _) => b.to_string(),
             _ => "<expression>".to_string(),
         }
     }
 
     fn check_expression(&mut self, expr: &Expr) -> Result<Type, TypeError> {
-        match expr {
-            Expr::IntegerLiteral(_) => Ok(Type::Int64),
-            Expr::FloatLiteral(_) => Ok(Type::Float64),
-            Expr::StringLiteral(_) => Ok(Type::String),
-            Expr::BoolLiteral(_) => Ok(Type::Bool),
+        let span = expr.span();
+        let result = self.check_expression_raw(expr);
+        result.map_err(|e| match e {
+            TypeError::AtLine { .. }
+            | TypeError::AtSpan { .. }
+            | TypeError::InFunction { .. } => e,
+            other => TypeError::AtSpan {
+                span,
+                source: Box::new(other),
+            },
+        })
+    }
 
-            Expr::Identifier(name) => {
+    fn check_expression_raw(&mut self, expr: &Expr) -> Result<Type, TypeError> {
+        match expr {
+            Expr::IntegerLiteral(_, _) => Ok(Type::Int64),
+            Expr::FloatLiteral(_, _) => Ok(Type::Float64),
+            Expr::StringLiteral(_, _) => Ok(Type::String),
+            Expr::BoolLiteral(_, _) => Ok(Type::Bool),
+
+            Expr::Identifier(name, _) => {
                 if self.freed_vars.contains(name) {
                     return Err(TypeError::UseAfterFree { name: name.clone() });
                 }
@@ -945,7 +965,7 @@ impl TypeChecker {
                 Err(TypeError::UndefinedVariable(name.clone()))
             }
 
-            Expr::BinaryOp { op, left, right } => {
+            Expr::BinaryOp { op, left, right, .. } => {
                 let left_type = self.check_expression(left)?;
                 let right_type = self.check_expression(right)?;
 
@@ -1011,7 +1031,7 @@ impl TypeChecker {
                 }
             }
 
-            Expr::UnaryOp { op, expr } => {
+            Expr::UnaryOp { op, expr, .. } => {
                 let expr_type = self.check_expression(expr)?;
                 match op {
                     UnaryOp::Neg => match expr_type {
@@ -1028,12 +1048,12 @@ impl TypeChecker {
                 }
             }
 
-            Expr::Ref(expr) => {
+            Expr::Ref(expr, _) => {
                 let expr_type = self.check_expression(expr)?;
                 Ok(Type::Ref(Box::new(expr_type)))
             }
 
-            Expr::Cast { expr, target_type } => {
+            Expr::Cast { expr, target_type, .. } => {
                 let source_type = self.check_expression(expr)?;
                 // Allow casting between numeric types and to/from String
                 match (&source_type, target_type) {
@@ -1057,9 +1077,9 @@ impl TypeChecker {
                 }
             }
 
-            Expr::FunctionCall { name, args } => {
+            Expr::FunctionCall { name, args, .. } => {
                 let func_name = match name.as_ref() {
-                    Expr::Identifier(n) => {
+                    Expr::Identifier(n, _) => {
                         // Convert qualified name: math::add -> math_add
                         n.replace("::", "_")
                     }
@@ -1120,11 +1140,12 @@ impl TypeChecker {
                 object,
                 method,
                 args,
+                ..
 } => {
                 // A repeated `.free()` on the same variable is a double free;
                 // checked before the object expression so the message is specific.
                 if method == "free" && args.is_empty() {
-                    if let Expr::Identifier(name) = object.as_ref() {
+                    if let Expr::Identifier(name, _) = object.as_ref() {
                         if self.freed_vars.contains(name) {
                             return Err(TypeError::DoubleFree { name: name.clone() });
                         }
@@ -1349,7 +1370,7 @@ impl TypeChecker {
                 // Track `.free()` on List/Map variables so later reads and
                 // repeated frees are rejected in the current statement flow.
                 if method == "free" && args.is_empty() {
-                    if let Expr::Identifier(name) = object.as_ref() {
+                    if let Expr::Identifier(name, _) = object.as_ref() {
                         match &object_type {
                             Type::List(_) | Type::Map(_, _) => {
                                 if self.freed_vars.contains(name) {
@@ -1367,7 +1388,7 @@ impl TypeChecker {
                 result
             }
 
-            Expr::FieldAccess { object, field } => {
+            Expr::FieldAccess { object, field, .. } => {
                 let object_type = self.check_expression(object)?;
 
                 // Unwrap reference type if needed
@@ -1406,7 +1427,7 @@ impl TypeChecker {
                 }
             }
 
-            Expr::IndexAccess { object, index } => {
+            Expr::IndexAccess { object, index, .. } => {
                 let object_type = self.check_expression(object)?;
                 let index_type = self.check_expression(index)?;
 
@@ -1475,7 +1496,7 @@ impl TypeChecker {
                 }
             }
 
-            Expr::ArrayLiteral(elements) => {
+            Expr::ArrayLiteral(elements, _) => {
                 if elements.is_empty() {
                     return Ok(Type::List(Box::new(Type::Void)));
                 }
@@ -1492,7 +1513,7 @@ impl TypeChecker {
                 Ok(Type::List(Box::new(first_type)))
             }
 
-            Expr::MapLiteral(pairs) => {
+            Expr::MapLiteral(pairs, _) => {
                 if pairs.is_empty() {
                     return Ok(Type::Map(
                         Box::new(Type::String),
@@ -1527,7 +1548,7 @@ impl TypeChecker {
                 Ok(Type::Map(Box::new(Type::String), Box::new(value_type)))
             }
 
-            Expr::Match { expr, arms } => {
+            Expr::Match { expr, arms, .. } => {
                 let expr_type = self.check_expression(expr)?;
 
                 // Unwrap reference type for pattern matching
@@ -1573,6 +1594,7 @@ impl TypeChecker {
                 condition,
                 then_branch,
                 else_branch,
+                ..
             } => {
                 let cond_type = self.check_expression(condition)?;
                 if !matches!(cond_type, Type::Bool) {
@@ -1593,7 +1615,7 @@ impl TypeChecker {
                 }
             }
 
-            Expr::Block(stmts) => {
+            Expr::Block(stmts, _) => {
                 // New scope for the whole block: clone the outer env, run all
                 // statements sequentially in it, then restore the outer env.
                 // Generic state lives on `self` and is preserved throughout.
@@ -1617,7 +1639,7 @@ impl TypeChecker {
                 outcome
             }
 
-            Expr::ChannelBounded { elem_type, capacity } => {
+            Expr::ChannelBounded { elem_type, capacity, .. } => {
                 let cap_type = self.check_expression(capacity)?;
                 if !matches!(cap_type, Type::UInt64 | Type::Int64) {
                     return Err(TypeError::TypeMismatch {
@@ -1628,7 +1650,7 @@ impl TypeChecker {
                 Ok(Type::Channel(elem_type.clone()))
             }
 
-            Expr::StructInit { name, fields } => {
+            Expr::StructInit { name, fields, .. } => {
                 // Check if the type exists
                 let type_def = self
                     .env
@@ -1663,7 +1685,7 @@ impl TypeChecker {
                 }
             }
 
-            Expr::EnumInit { enum_name, variant, args } => {
+            Expr::EnumInit { enum_name, variant, args, .. } => {
                 // Built-in phantom enums: Option::Some/None, Result::Ok/Err
                 if enum_name == "Option" {
                     return match variant.as_str() {
@@ -1769,7 +1791,7 @@ impl TypeChecker {
                 }
             }
 
-            Expr::Await(expr) => {
+            Expr::Await(expr, _) => {
                 let expr_type = self.check_expression(expr)?;
                 match expr_type {
                     Type::Async(inner) => Ok(*inner),
@@ -1929,7 +1951,7 @@ impl TypeChecker {
     /// A plain integer literal (typed `Int64` by default) satisfies a declared
     /// `UInt64`/`Float64` expectation, matching how `5` works for any Rust int.
     fn int_literal_satisfies(&self, expected: &Type, found: &Type, expr: &Expr) -> bool {
-        matches!(expr, Expr::IntegerLiteral(_))
+        matches!(expr, Expr::IntegerLiteral(_, _))
             && matches!(found, Type::Int64)
             && matches!(expected, Type::Int64 | Type::UInt64 | Type::Float64)
     }
@@ -2654,5 +2676,46 @@ mod tests {
 
         let mut checker = TypeChecker::new();
         assert!(checker.check_program(&program).is_err());
+    }
+
+    #[test]
+    fn test_type_error_reports_full_span_of_identifier() {
+        let input = "\
+@fn main() -> Void {
+    let mut n: Int64 = 0;
+    let x: Int64 = n + 1 + nope;
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        let msg = format!("{}", checker.check_program(&program).unwrap_err());
+        assert!(
+            msg.contains("line 3:28-32: Undefined variable: nope"),
+            "got {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_type_error_reports_full_span_of_binary_op() {
+        let input = "\
+@fn main() -> Void {
+    let x: Int64 = 1 + \"abc\";
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        let msg = format!("{}", checker.check_program(&program).unwrap_err());
+        assert!(
+            msg.contains("line 2:20-29: Cannot apply operator to type: +"),
+            "got {}",
+            msg
+        );
     }
 }

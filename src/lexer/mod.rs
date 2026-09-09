@@ -115,6 +115,9 @@ pub struct SpannedToken {
     pub token: Token,
     pub line: usize,
     pub column: usize,
+    /// One past the last character of the token on `line`.
+    pub end_line: usize,
+    pub end_column: usize,
 }
 
 #[derive(Error, Debug)]
@@ -344,6 +347,8 @@ impl Lexer {
                         token: Token::Eof,
                         line,
                         column,
+                        end_line: line,
+                        end_column: column,
                     });
                     break;
                 }
@@ -564,6 +569,8 @@ impl Lexer {
                 token,
                 line,
                 column,
+                end_line: self.line,
+                end_column: self.column,
             });
         }
 

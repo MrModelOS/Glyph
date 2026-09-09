@@ -153,26 +153,30 @@ pub fn substitute_stmt(subst: &HashMap<String, Type>, stmt: &Stmt) -> Stmt {
 
 pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
     match expr {
-        Expr::IntegerLiteral(v) => Expr::IntegerLiteral(*v),
-        Expr::FloatLiteral(v) => Expr::FloatLiteral(*v),
-        Expr::StringLiteral(s) => Expr::StringLiteral(s.clone()),
-        Expr::BoolLiteral(b) => Expr::BoolLiteral(*b),
-        Expr::Identifier(n) => Expr::Identifier(n.clone()),
-        Expr::BinaryOp { op, left, right } => Expr::BinaryOp {
+        Expr::IntegerLiteral(v, sp) => Expr::IntegerLiteral(*v, *sp),
+        Expr::FloatLiteral(v, sp) => Expr::FloatLiteral(*v, *sp),
+        Expr::StringLiteral(s, sp) => Expr::StringLiteral(s.clone(), *sp),
+        Expr::BoolLiteral(b, sp) => Expr::BoolLiteral(*b, *sp),
+        Expr::Identifier(n, sp) => Expr::Identifier(n.clone(), *sp),
+        Expr::BinaryOp { op, left, right, .. } => Expr::BinaryOp {
+            span: expr.span(),
             op: op.clone(),
             left: Box::new(substitute_expr(subst, left)),
             right: Box::new(substitute_expr(subst, right)),
         },
-        Expr::UnaryOp { op, expr: e } => Expr::UnaryOp {
+        Expr::UnaryOp { op, expr: e, .. } => Expr::UnaryOp {
+            span: expr.span(),
             op: op.clone(),
             expr: Box::new(substitute_expr(subst, e)),
         },
-        Expr::Ref(e) => Expr::Ref(Box::new(substitute_expr(subst, e))),
-        Expr::Cast { expr: e, target_type } => Expr::Cast {
+        Expr::Ref(e, sp) => Expr::Ref(Box::new(substitute_expr(subst, e)), *sp),
+        Expr::Cast { expr: e, target_type, .. } => Expr::Cast {
+            span: expr.span(),
             expr: Box::new(substitute_expr(subst, e)),
             target_type: substitute_type(subst, target_type),
         },
-        Expr::FunctionCall { name, args } => Expr::FunctionCall {
+        Expr::FunctionCall { name, args, .. } => Expr::FunctionCall {
+            span: expr.span(),
             name: Box::new(substitute_expr(subst, name)),
             args: args.iter().map(|a| substitute_expr(subst, a)).collect(),
         },
@@ -180,20 +184,25 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
             object,
             method,
             args,
+            ..
         } => Expr::MethodCall {
+            span: expr.span(),
             object: Box::new(substitute_expr(subst, object)),
             method: method.clone(),
             args: args.iter().map(|a| substitute_expr(subst, a)).collect(),
         },
-        Expr::FieldAccess { object, field } => Expr::FieldAccess {
+        Expr::FieldAccess { object, field, .. } => Expr::FieldAccess {
+            span: expr.span(),
             object: Box::new(substitute_expr(subst, object)),
             field: field.clone(),
         },
-        Expr::IndexAccess { object, index } => Expr::IndexAccess {
+        Expr::IndexAccess { object, index, .. } => Expr::IndexAccess {
+            span: expr.span(),
             object: Box::new(substitute_expr(subst, object)),
             index: Box::new(substitute_expr(subst, index)),
         },
-        Expr::StructInit { name, fields } => Expr::StructInit {
+        Expr::StructInit { name, fields, .. } => Expr::StructInit {
+            span: expr.span(),
             name: name.clone(),
             fields: fields
                 .iter()
@@ -204,12 +213,15 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
             enum_name,
             variant,
             args,
+            ..
         } => Expr::EnumInit {
+            span: expr.span(),
             enum_name: enum_name.clone(),
             variant: variant.clone(),
             args: args.iter().map(|a| substitute_expr(subst, a)).collect(),
         },
-        Expr::Match { expr: e, arms } => Expr::Match {
+        Expr::Match { expr: e, arms, .. } => Expr::Match {
+            span: expr.span(),
             expr: Box::new(substitute_expr(subst, e)),
             arms: arms
                 .iter()
@@ -224,27 +236,31 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
             condition,
             then_branch,
             else_branch,
+            ..
         } => Expr::If {
+            span: expr.span(),
             condition: Box::new(substitute_expr(subst, condition)),
             then_branch: Box::new(substitute_expr(subst, then_branch)),
             else_branch: else_branch
                 .as_ref()
                 .map(|e| Box::new(substitute_expr(subst, e))),
         },
-        Expr::Block(stmts) => Expr::Block(stmts.iter().map(|s| substitute_stmt(subst, s)).collect()),
+        Expr::Block(stmts, sp) => Expr::Block(stmts.iter().map(|s| substitute_stmt(subst, s)).collect(), *sp),
         Expr::Range {
             start,
             end,
             inclusive,
+            ..
         } => Expr::Range {
+            span: expr.span(),
             start: Box::new(substitute_expr(subst, start)),
             end: Box::new(substitute_expr(subst, end)),
             inclusive: *inclusive,
         },
-        Expr::ArrayLiteral(elems) => Expr::ArrayLiteral(
-            elems.iter().map(|e| substitute_expr(subst, e)).collect(),
+        Expr::ArrayLiteral(elems, sp) => Expr::ArrayLiteral(
+            elems.iter().map(|e| substitute_expr(subst, e)).collect(), *sp,
         ),
-        Expr::MapLiteral(pairs) => Expr::MapLiteral(
+        Expr::MapLiteral(pairs, sp) => Expr::MapLiteral(
             pairs
                 .iter()
                 .map(|(k, v)| {
@@ -253,13 +269,14 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
                         substitute_expr(subst, v),
                     )
                 })
-                .collect(),
+                .collect(), *sp,
         ),
-        Expr::ChannelBounded { elem_type, capacity } => Expr::ChannelBounded {
+        Expr::ChannelBounded { elem_type, capacity, .. } => Expr::ChannelBounded {
+            span: expr.span(),
             elem_type: Box::new(substitute_type(subst, elem_type)),
             capacity: Box::new(substitute_expr(subst, capacity)),
         },
-        Expr::Await(e) => Expr::Await(Box::new(substitute_expr(subst, e))),
+        Expr::Await(e, sp) => Expr::Await(Box::new(substitute_expr(subst, e)), *sp),
     }
 }
 

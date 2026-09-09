@@ -42,7 +42,26 @@ impl Parser {
             token: Token::Eof,
             line: 0,
             column: 0,
+            end_line: 0,
+            end_column: 0,
         })
+    }
+
+    /// End position (exclusive) of the most recently consumed token.
+    fn last_end(&self) -> LineCol {
+        if self.pos == 0 {
+            return LineCol { line: 1, col: 1 };
+        }
+        let t = &self.tokens[self.pos - 1];
+        LineCol { line: t.end_line, col: t.end_column }
+    }
+
+    /// Build a span from a token that begins the node to the current end.
+    fn span_of(&self, start: &SpannedToken) -> Span {
+        Span::new(
+            LineCol { line: start.line, col: start.column },
+            self.last_end(),
+        )
     }
 
     fn advance(&mut self) -> &SpannedToken {
@@ -804,7 +823,7 @@ impl Parser {
                 let ty = self.parse_type()?;
                 self.expect(&Token::ArrowLeft)?;
                 let target = self.parse_expression()?;
-                if matches!(&target, Expr::Await(_)) {
+                if matches!(&target, Expr::Await(_, _)) {
                     SelectEvent::Await { target, name, ty }
                 } else {
                     SelectEvent::Recv { target, name, ty }
@@ -867,6 +886,7 @@ self.expect(&Token::FatArrow)?;
             self.advance();
             let right = self.parse_and()?;
             left = Expr::BinaryOp {
+                span: Span::new(left.span().start, right.span().end),
                 op: BinOp::Or,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -883,6 +903,7 @@ self.expect(&Token::FatArrow)?;
             self.advance();
             let right = self.parse_equality()?;
             left = Expr::BinaryOp {
+                span: Span::new(left.span().start, right.span().end),
                 op: BinOp::And,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -905,6 +926,7 @@ self.expect(&Token::FatArrow)?;
             };
             let right = self.parse_comparison()?;
             left = Expr::BinaryOp {
+                span: Span::new(left.span().start, right.span().end),
                 op,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -927,6 +949,7 @@ self.expect(&Token::FatArrow)?;
             };
             let right = self.parse_range()?;
             left = Expr::BinaryOp {
+                span: Span::new(left.span().start, right.span().end),
                 op,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -944,6 +967,7 @@ self.expect(&Token::FatArrow)?;
             self.advance();
             let end = self.parse_concat()?;
             Ok(Expr::Range {
+                span: Span::new(left.span().start, end.span().end),
                 start: Box::new(left),
                 end: Box::new(end),
                 inclusive,
@@ -960,6 +984,7 @@ self.expect(&Token::FatArrow)?;
             self.advance();
             let right = self.parse_additive()?;
             left = Expr::BinaryOp {
+                span: Span::new(left.span().start, right.span().end),
                 op: BinOp::Concat,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -982,6 +1007,7 @@ self.expect(&Token::FatArrow)?;
             };
             let right = self.parse_multiplicative()?;
             left = Expr::BinaryOp {
+                span: Span::new(left.span().start, right.span().end),
                 op,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -1003,6 +1029,7 @@ self.expect(&Token::FatArrow)?;
             };
             let right = self.parse_as()?;
             left = Expr::BinaryOp {
+                span: Span::new(left.span().start, right.span().end),
                 op,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -1019,6 +1046,7 @@ self.expect(&Token::FatArrow)?;
             self.advance();
             let target_type = self.parse_type()?;
             Ok(Expr::Cast {
+                span: Span::new(expr.span().start, self.last_end()),
                 expr: Box::new(expr),
                 target_type,
             })
@@ -1030,25 +1058,31 @@ self.expect(&Token::FatArrow)?;
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Token::Minus => {
+                let start = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
                 self.advance();
                 let expr = self.parse_unary()?;
                 Ok(Expr::UnaryOp {
+                    span: Span::new(start, expr.span().end),
                     op: UnaryOp::Neg,
                     expr: Box::new(expr),
                 })
             }
             Token::Bang => {
+                let start = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
                 self.advance();
                 let expr = self.parse_unary()?;
                 Ok(Expr::UnaryOp {
+                    span: Span::new(start, expr.span().end),
                     op: UnaryOp::Not,
                     expr: Box::new(expr),
                 })
             }
             Token::Ref => {
+                let start = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
                 self.advance();
                 let expr = self.parse_unary()?;
-                Ok(Expr::Ref(Box::new(expr)))
+                let inner_span = expr.span();
+                Ok(Expr::Ref(Box::new(expr), Span::new(start, inner_span.end)))
             }
             _ => self.parse_postfix(),
         }
@@ -1079,12 +1113,14 @@ self.expect(&Token::FatArrow)?;
                         self.expect(&Token::RParen)?;
 
                         expr = Expr::MethodCall {
+                            span: Span::new(expr.span().start, self.last_end()),
                             object: Box::new(expr),
                             method,
                             args,
                         };
                     } else {
                         expr = Expr::FieldAccess {
+                            span: Span::new(expr.span().start, self.last_end()),
                             object: Box::new(expr),
                             field: method,
                         };
@@ -1106,6 +1142,7 @@ self.expect(&Token::FatArrow)?;
                     self.expect(&Token::RParen)?;
 
                     expr = Expr::FunctionCall {
+                        span: Span::new(expr.span().start, self.last_end()),
                         name: Box::new(expr),
                         args,
                     };
@@ -1116,13 +1153,15 @@ self.expect(&Token::FatArrow)?;
                     self.expect(&Token::RBracket)?;
 
                     expr = Expr::IndexAccess {
+                        span: Span::new(expr.span().start, self.last_end()),
                         object: Box::new(expr),
                         index: Box::new(index),
                     };
                 }
                 Token::Await => {
                     self.advance();
-                    expr = Expr::Await(Box::new(expr));
+                    let base_span = expr.span();
+                    expr = Expr::Await(Box::new(expr), Span::new(base_span.start, self.last_end()));
                 }
                 _ => break,
             }
@@ -1137,23 +1176,23 @@ self.expect(&Token::FatArrow)?;
         match &spanned.token {
             Token::Integer(v) => {
                 self.advance();
-                Ok(Expr::IntegerLiteral(*v))
+                Ok(Expr::IntegerLiteral(*v, self.span_of(&spanned)))
             }
             Token::Float(v) => {
                 self.advance();
-                Ok(Expr::FloatLiteral(*v))
+                Ok(Expr::FloatLiteral(*v, self.span_of(&spanned)))
             }
             Token::StringLiteral(s) => {
                 self.advance();
-                Ok(Expr::StringLiteral(s.clone()))
+                Ok(Expr::StringLiteral(s.clone(), self.span_of(&spanned)))
             }
             Token::True => {
                 self.advance();
-                Ok(Expr::BoolLiteral(true))
+                Ok(Expr::BoolLiteral(true, self.span_of(&spanned)))
             }
             Token::False => {
                 self.advance();
-                Ok(Expr::BoolLiteral(false))
+                Ok(Expr::BoolLiteral(false, self.span_of(&spanned)))
             }
             Token::Identifier(name) => {
                 self.advance();
@@ -1183,6 +1222,7 @@ self.expect(&Token::FatArrow)?;
                             }
                             self.expect(&Token::RParen)?;
                             return Ok(Expr::EnumInit {
+                                span: self.span_of(&spanned),
                                 enum_name: path[0].clone(),
                                 variant: path[1].clone(),
                                 args,
@@ -1190,6 +1230,7 @@ self.expect(&Token::FatArrow)?;
                         } else {
                             // Enum variant without data: Shape::Point
                             return Ok(Expr::EnumInit {
+                                span: self.span_of(&spanned),
                                 enum_name: path[0].clone(),
                                 variant: path[1].clone(),
                                 args: vec![],
@@ -1199,7 +1240,7 @@ self.expect(&Token::FatArrow)?;
 
                     // Return as identifier with full path (e.g., "math::add")
                     let full_name = path.join("::");
-                    Ok(Expr::Identifier(full_name))
+                    Ok(Expr::Identifier(full_name, self.span_of(&spanned)))
                 }
                 // Check for struct initialization: TypeName { field: value, ... }
                 // Only uppercase-starting identifiers can be struct type names
@@ -1217,11 +1258,12 @@ self.expect(&Token::FatArrow)?;
                     }
                     self.expect(&Token::RBrace)?;
                     Ok(Expr::StructInit {
+                        span: self.span_of(&spanned),
                         name: name.clone(),
                         fields,
                     })
                 } else {
-                    Ok(Expr::Identifier(name.clone()))
+                    Ok(Expr::Identifier(name.clone(), self.span_of(&spanned)))
                 }
             }
             Token::LParen => {
@@ -1234,7 +1276,7 @@ self.expect(&Token::FatArrow)?;
                 self.advance();
                 let stmts = self.parse_block()?;
                 self.expect(&Token::RBrace)?;
-                Ok(Expr::Block(stmts))
+                Ok(Expr::Block(stmts, self.span_of(&spanned)))
             }
             Token::LBracket => {
                 // Array literal [1, 2, 3]
@@ -1251,7 +1293,7 @@ self.expect(&Token::FatArrow)?;
                     }
                 }
                 self.expect(&Token::RBracket)?;
-                Ok(Expr::ArrayLiteral(elements))
+                Ok(Expr::ArrayLiteral(elements, self.span_of(&spanned)))
             }
             Token::Pound => {
                 // Map literal: #{ "key": value, ... }
@@ -1272,7 +1314,7 @@ self.expect(&Token::FatArrow)?;
                     }
                 }
                 self.expect(&Token::RBrace)?;
-                Ok(Expr::MapLiteral(pairs))
+                Ok(Expr::MapLiteral(pairs, self.span_of(&spanned)))
             }
             Token::If => self.parse_if(),
             Token::Match => self.parse_match(),
@@ -1293,6 +1335,7 @@ self.expect(&Token::FatArrow)?;
         &mut self,
         enum_name: &str,
     ) -> Result<Expr, ParseError> {
+        let start = self.peek_spanned().clone();
         self.advance(); // consume Result / Option token
         self.expect(&Token::DoubleColon)?;
         let variant = self.expect_ident()?;
@@ -1317,6 +1360,7 @@ self.expect(&Token::FatArrow)?;
         };
 
         Ok(Expr::EnumInit {
+            span: self.span_of(&start),
             enum_name: enum_name.to_string(),
             variant,
             args,
@@ -1325,6 +1369,7 @@ self.expect(&Token::FatArrow)?;
 
     /// Parse a channel constructor: Channel<T>(capacity).
     fn parse_channel_constructor(&mut self) -> Result<Expr, ParseError> {
+        let start = self.peek_spanned().clone();
         self.advance(); // consume Channel token
         self.expect(&Token::Lt)?;
         let elem_type = self.parse_type()?;
@@ -1334,14 +1379,17 @@ self.expect(&Token::FatArrow)?;
         self.expect(&Token::RParen)?;
 
         Ok(Expr::ChannelBounded {
+            span: self.span_of(&start),
             elem_type: Box::new(elem_type),
             capacity: Box::new(capacity),
         })
     }
 
     fn parse_if(&mut self) -> Result<Expr, ParseError> {
+        let start = self.peek_spanned().clone();
         self.advance(); // consume if
         let condition = self.parse_expression()?;
+        let then_start = self.peek_spanned().clone();
         self.expect(&Token::LBrace)?;
         let then_stmts = self.parse_block()?;
         self.expect(&Token::RBrace)?;
@@ -1351,23 +1399,26 @@ self.expect(&Token::FatArrow)?;
             if self.peek() == &Token::If {
                 Some(Box::new(self.parse_if()?))
             } else {
+                let else_start = self.peek_spanned().clone();
                 self.expect(&Token::LBrace)?;
                 let else_stmts = self.parse_block()?;
                 self.expect(&Token::RBrace)?;
-                Some(Box::new(Expr::Block(else_stmts)))
+                Some(Box::new(Expr::Block(else_stmts, self.span_of(&else_start))))
             }
         } else {
             None
         };
 
         Ok(Expr::If {
+            span: self.span_of(&start),
             condition: Box::new(condition),
-            then_branch: Box::new(Expr::Block(then_stmts)),
+            then_branch: Box::new(Expr::Block(then_stmts, self.span_of(&then_start))),
             else_branch,
         })
     }
 
     fn parse_match(&mut self) -> Result<Expr, ParseError> {
+        let start = self.peek_spanned().clone();
         self.advance(); // consume match
         let expr = self.parse_expression()?;
         self.expect(&Token::LBrace)?;
@@ -1398,6 +1449,7 @@ self.expect(&Token::FatArrow)?;
         self.expect(&Token::RBrace)?;
 
         Ok(Expr::Match {
+            span: self.span_of(&start),
             expr: Box::new(expr),
             arms,
         })
@@ -1651,7 +1703,7 @@ mod tests {
         match &program.items[0] {
             TopLevelItem::Function { body, .. } => {
                 if let Stmt::Let { value, .. } = &body[0] {
-                    assert!(matches!(value, Expr::ArrayLiteral(_)));
+                    assert!(matches!(value, Expr::ArrayLiteral(_, _)));
                 } else {
                     panic!("Expected let statement");
                 }
@@ -1803,7 +1855,7 @@ mod tests {
             TopLevelItem::Function { body, .. } => {
                 assert!(matches!(&body[0], Stmt::Spawn(..)));
                 if let Stmt::Let { value, .. } = &body[1] {
-                    assert!(matches!(value, Expr::Await(_)));
+                    assert!(matches!(value, Expr::Await(_, _)));
                 } else {
                     panic!("Expected let statement");
                 }

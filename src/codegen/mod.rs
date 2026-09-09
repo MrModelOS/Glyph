@@ -1061,7 +1061,7 @@ impl CCodegen {
                     }
                     SelectEvent::Await { target, .. } => {
                         let inner = match target {
-                            Expr::Await(inner) => inner,
+                            Expr::Await(inner, _) => inner,
                             _ => unreachable!("parser only builds Await from await expressions"),
                         };
                         self.emit_indent();
@@ -1346,21 +1346,21 @@ impl CCodegen {
                 };
                 write!(self.output, "{} {} = ", ty_str, name).unwrap();
                 match (&inferred_ty, value) {
-                    (Some(Type::List(elem)), Expr::ArrayLiteral(elements)) => {
+                    (Some(Type::List(elem)), Expr::ArrayLiteral(elements, _)) => {
                         self.emit_list_literal(elements, elem)?;
                     }
-                    (Some(Type::List(_)), Expr::Range { start, end, inclusive }) => {
+                    (Some(Type::List(_)), Expr::Range { start, end, inclusive, .. }) => {
                         write!(self.output, "glyph_range_i64(").unwrap();
                         self.emit_expression(start)?;
                         write!(self.output, ", ").unwrap();
                         self.emit_expression(end)?;
                         write!(self.output, ", {})", if *inclusive { "1" } else { "0" }).unwrap();
                     }
-                    (Some(declared), Expr::FunctionCall { name, args }) => {
+                    (Some(declared), Expr::FunctionCall { name, args, .. }) => {
                         // Resolve with the declared type as expected return so
                         // return-only type parameters get inferred.
                         let callee = match name.as_ref() {
-                            Expr::Identifier(n) => Some(n.clone()),
+                            Expr::Identifier(n, _) => Some(n.clone()),
                             _ => None,
                         };
                         // Async calls build a lazy handle; no expected type needed.
@@ -1414,7 +1414,7 @@ impl CCodegen {
                         )
                 );
                 if is_map_put {
-                    if let Expr::IndexAccess { object, index } = target {
+                    if let Expr::IndexAccess { object, index, .. } = target {
                         let val = self.resolved_map_value(object).unwrap_or(Type::Int64);
                         let c_val = self.type_to_c(&val);
                         write!(self.output, "({{ {} _mv = ", c_val).unwrap();
@@ -1422,7 +1422,7 @@ impl CCodegen {
                         write!(self.output, "; glyph_map_put(&(").unwrap();
                         self.emit_expression(object)?;
                         write!(self.output, "), ").unwrap();
-                        if let Expr::StringLiteral(s) = index.as_ref() {
+                        if let Expr::StringLiteral(s, _) = index.as_ref() {
                             write!(self.output, "\"{}\", &_mv); }})", Self::escape_c_string(s)).unwrap();
                         } else {
                             write!(self.output, "((const char*)(").unwrap();
@@ -1511,7 +1511,7 @@ impl CCodegen {
                 body,
                 ..
             } => {
-                if let Expr::Range { start, end, inclusive } = iterable {
+                if let Expr::Range { start, end, inclusive, .. } = iterable {
                     // Range: int64_t loop variable + counter
                     let op = if *inclusive { "<=" } else { "<" };
                     self.emit_indent();
@@ -1642,22 +1642,22 @@ impl CCodegen {
         visited: &mut std::collections::HashSet<String>,
     ) -> Result<String, String> {
         match expr {
-            Expr::IntegerLiteral(value) => Ok(value.to_string()),
-            Expr::FloatLiteral(value) => Ok(value.to_string()),
-            Expr::BoolLiteral(value) => Ok(if *value { "1" } else { "0" }.to_string()),
-            Expr::StringLiteral(value) => Ok(format!("\"{}\"", Self::escape_c_string(value))),
-            Expr::UnaryOp { op, expr } => {
+            Expr::IntegerLiteral(value, _) => Ok(value.to_string()),
+            Expr::FloatLiteral(value, _) => Ok(value.to_string()),
+            Expr::BoolLiteral(value, _) => Ok(if *value { "1" } else { "0" }.to_string()),
+            Expr::StringLiteral(value, _) => Ok(format!("\"{}\"", Self::escape_c_string(value))),
+            Expr::UnaryOp { op, expr, .. } => {
                 let inner = self.const_expr_to_c(expr, visited)?;
                 match op {
                     UnaryOp::Neg => Ok(format!("-({})", inner)),
                     UnaryOp::Not => Ok(format!("!({})", inner)),
                 }
             }
-            Expr::Cast { expr, target_type } => {
+            Expr::Cast { expr, target_type, .. } => {
                 let inner = self.const_expr_to_c(expr, visited)?;
                 Ok(format!("({})({})", self.type_to_c(target_type), inner))
             }
-            Expr::Identifier(name) => {
+            Expr::Identifier(name, _) => {
                 if visited.contains(name) {
                     return Err(format!("cyclic const reference '{}'", name));
                 }
@@ -1669,7 +1669,7 @@ impl CCodegen {
                 visited.remove(name);
                 Ok(result)
             }
-            Expr::BinaryOp { op, left, right } => {
+            Expr::BinaryOp { op, left, right, .. } => {
                 if matches!(op, BinOp::Concat) {
                     return Err("string concat (++) is not allowed in @const".to_string());
                 }
@@ -1686,24 +1686,24 @@ impl CCodegen {
 
     fn emit_expression(&mut self, expr: &Expr) -> Result<(), CodegenError> {
         match expr {
-            Expr::IntegerLiteral(value) => {
+            Expr::IntegerLiteral(value, _) => {
                 write!(self.output, "{}", value).unwrap();
             }
-            Expr::FloatLiteral(value) => {
+            Expr::FloatLiteral(value, _) => {
                 write!(self.output, "{}", value).unwrap();
             }
-            Expr::StringLiteral(value) => {
+            Expr::StringLiteral(value, _) => {
                 write!(self.output, "\"{}\"", Self::escape_c_string(value)).unwrap();
             }
-            Expr::BoolLiteral(value) => {
+            Expr::BoolLiteral(value, _) => {
                 write!(self.output, "{}", if *value { "1" } else { "0" }).unwrap();
             }
-            Expr::Identifier(name) => {
+            Expr::Identifier(name, _) => {
                 // Convert qualified name: math::add -> math_add
                 let c_name = name.replace("::", "_");
                 write!(self.output, "{}", c_name).unwrap();
             }
-            Expr::BinaryOp { op, left, right } => {
+            Expr::BinaryOp { op, left, right, .. } => {
                 if matches!(op, BinOp::Concat) {
                     // List concatenation goes through the list runtime;
                     // everything else is string concatenation.
@@ -1797,41 +1797,41 @@ impl CCodegen {
                     write!(self.output, ")").unwrap();
                 }
             }
-            Expr::UnaryOp { op, expr } => {
+            Expr::UnaryOp { op, expr, .. } => {
                 match op {
                     UnaryOp::Neg => write!(self.output, "-").unwrap(),
                     UnaryOp::Not => write!(self.output, "!").unwrap(),
                 }
                 self.emit_expression(expr)?;
             }
-            Expr::Ref(expr) => {
+            Expr::Ref(expr, _) => {
                 write!(self.output, "&").unwrap();
                 self.emit_expression(expr)?;
             }
-            Expr::Cast { expr, target_type } => {
+            Expr::Cast { expr, target_type, .. } => {
                 // C-style cast
                 write!(self.output, "({})", self.type_to_c(&self.subst_active(target_type))).unwrap();
                 write!(self.output, "(").unwrap();
                 self.emit_expression(expr)?;
                 write!(self.output, ")").unwrap();
             }
-            Expr::FunctionCall { name, args } => {
+            Expr::FunctionCall { name, args, .. } => {
                 // Async call: build a lazy handle instead of calling directly.
-                if let Expr::Identifier(n) = name.as_ref() {
+                if let Expr::Identifier(n, _) = name.as_ref() {
                     if let Some((cname, cparams)) = self.lookup_async_fn(n) {
                         self.emit_async_call(&cname, &cparams, args)?;
                         return Ok(());
                     }
                 }
                 // Map Glyph built-in function names to C names
-                let resolved_name = if let Expr::Identifier(n) = name.as_ref() {
+                let resolved_name = if let Expr::Identifier(n, _) = name.as_ref() {
                     self.resolve_call_cname(n, args)
                 } else {
                     None
                 };
                 if let Some(cname) = resolved_name {
                     write!(self.output, "{}", cname).unwrap();
-                } else if let Expr::Identifier(n) = name.as_ref() {
+                } else if let Expr::Identifier(n, _) = name.as_ref() {
                     // Unknown callee: fail loudly instead of emitting garbage.
                     // (Unreachable after typechecking; guards --no-typecheck.)
                     if self.generic_fns.contains_key(n) {
@@ -1854,6 +1854,7 @@ impl CCodegen {
                 object,
                 method,
                 args,
+                ..
             } => {
                 // Custom-type methods dispatch first, even when named like a
                 // builtin (user methods named `len`/`append` are not shadowed).
@@ -2071,12 +2072,12 @@ impl CCodegen {
                     }
                 }
             }
-            Expr::FieldAccess { object, field } => {
+            Expr::FieldAccess { object, field, .. } => {
                 self.emit_expression(object)?;
                 write!(self.output, ".{}", field).unwrap();
             }
-            Expr::IndexAccess { object, index } => {
-                if let Expr::Range { start, end, inclusive } = &**index {
+            Expr::IndexAccess { object, index, .. } => {
+                if let Expr::Range { start, end, inclusive, .. } = &**index {
                     if self.resolved_list_elem(object).is_some() {
                         write!(self.output, "glyph_list_slice(").unwrap();
                         self.emit_expression(object)?;
@@ -2116,7 +2117,7 @@ impl CCodegen {
                         // GlyphList indexing through the heap buffer.
                         // An explicit `&xs` reference exposes the same buffer.
                         let target = match object.as_ref() {
-                            Expr::Ref(inner) => inner.as_ref(),
+                            Expr::Ref(inner, _) => inner.as_ref(),
                             _ => object.as_ref(),
                         };
                         write!(self.output, "(({}*)((", self.type_to_c(&elem)).unwrap();
@@ -2133,7 +2134,7 @@ impl CCodegen {
                     }
                 }
             }
-            Expr::StructInit { name, fields } => {
+            Expr::StructInit { name, fields, .. } => {
                 write!(self.output, "({}){{", name).unwrap();
                 for (i, (field_name, field_value)) in fields.iter().enumerate() {
                     if i > 0 {
@@ -2144,7 +2145,7 @@ impl CCodegen {
                 }
                 write!(self.output, "}}").unwrap();
             }
-            Expr::EnumInit { enum_name, variant, args } => {
+            Expr::EnumInit { enum_name, variant, args, .. } => {
                 if enum_name == "Result" || enum_name == "Option" {
                     // Boxed phantom enum. The payload temp must stay alive for
                     // the duration of the copying call, so the whole call lives
@@ -2177,7 +2178,7 @@ impl CCodegen {
                 }
                 write!(self.output, "}}").unwrap();
             }
-            Expr::Match { expr, arms } => {
+            Expr::Match { expr, arms, .. } => {
                 // Boxed phantom-enum match: Option<T> / Result<T, E>
                 // Resolve and clone first to release the borrow on self.
                 let phantom = self.resolved_expr_type(expr).map(|t| self.subst_active(&t)).and_then(|t| match t {
@@ -2196,7 +2197,7 @@ impl CCodegen {
                     // variables and struct fields may alias elsewhere: theirs.
                     let owned = !matches!(
                         expr.as_ref(),
-                        Expr::Identifier(_) | Expr::FieldAccess { .. }
+                        Expr::Identifier(_, _) | Expr::FieldAccess { .. }
                     );
                     if owned {
                         write!(self.output, "GlyphBox* _match_val_box __attribute__((cleanup(glyph_box_free_cleanup))) = (GlyphBox*)(").unwrap();
@@ -2350,6 +2351,7 @@ impl CCodegen {
                 condition,
                 then_branch,
                 else_branch,
+                ..
             } => {
                 // Use GNU Statement Expression for if expression
                 writeln!(self.output, "({{").unwrap();
@@ -2384,7 +2386,7 @@ impl CCodegen {
                 self.emit_indent();
                 writeln!(self.output, "}})").unwrap();
             }
-            Expr::Block(stmts) => {
+            Expr::Block(stmts, _) => {
                 // Use GNU Statement Expression
                 writeln!(self.output, "({{").unwrap();
                 self.indent += 1;
@@ -2400,13 +2402,13 @@ impl CCodegen {
                 // This is a placeholder - actual range handling is in for loop codegen
                 self.emit_expression(start)?;
             }
-            Expr::ArrayLiteral(elements) => {
+            Expr::ArrayLiteral(elements, _) => {
                 // A literal is always a heap-allocated GlyphList; the element
                 // type comes from the first element (Int64 fallback).
                 let elem_ty = self.infer_list_elem(elements);
                 self.emit_list_literal(elements, &elem_ty)?;
             }
-            Expr::MapLiteral(pairs) => {
+            Expr::MapLiteral(pairs, _) => {
                 let val_ty = self.infer_map_value(pairs);
                 let c_val = self.type_to_c(&val_ty);
                 write!(self.output, "({{ GlyphMap _m = glyph_map_new(sizeof({}));", c_val)
@@ -2415,7 +2417,7 @@ impl CCodegen {
                     write!(self.output, " {{ {} _mv = ", c_val).unwrap();
                     self.emit_expression(v)?;
                     write!(self.output, "; ").unwrap();
-                    if let Expr::StringLiteral(s) = k {
+                    if let Expr::StringLiteral(s, _) = k {
                         write!(
                             self.output,
                             "glyph_map_put(&_m, \"{}\", &_mv); }}",
@@ -2435,7 +2437,7 @@ impl CCodegen {
                 self.emit_expression(capacity)?;
                 write!(self.output, ")").unwrap();
             }
-            Expr::Await(expr) => {
+            Expr::Await(expr, _) => {
                 // Unbox to the handle's payload type when statically known.
                 let payload = self.resolved_expr_type(expr).and_then(|t| match t {
                     Type::Async(inner) => Some(*inner),
@@ -2574,8 +2576,8 @@ impl CCodegen {
                     var_types.insert(name.clone(), concrete);
                     // Re-resolve a direct generic call with the declared type as
                     // expected return, so return-only parameters get inferred.
-                    if let (Some(declared), Expr::FunctionCall { name: callee, args }) = (ty, value) {
-                        if let Expr::Identifier(n) = callee.as_ref() {
+                    if let (Some(declared), Expr::FunctionCall { name: callee, args, .. }) = (ty, value) {
+                        if let Expr::Identifier(n, _) = callee.as_ref() {
                             if self.generic_fns.contains_key(n) {
                                 let ret_ctx = substitute_type(active_subst, declared);
                                 self.register_generic_call(n, args, var_types, &Some(ret_ctx))?;
@@ -2649,26 +2651,26 @@ Stmt::Assignment { target, value, .. } => {
         active_subst: &HashMap<String, Type>,
     ) -> Result<(), String> {
         match expr {
-            Expr::IntegerLiteral(_)
-            | Expr::FloatLiteral(_)
-            | Expr::StringLiteral(_)
-            | Expr::BoolLiteral(_) => {}
-            Expr::Identifier(_) => {}
+            Expr::IntegerLiteral(_, _)
+            | Expr::FloatLiteral(_, _)
+            | Expr::StringLiteral(_, _)
+            | Expr::BoolLiteral(_, _) => {}
+            Expr::Identifier(_, _) => {}
             Expr::BinaryOp { left, right, .. } => {
                 self.scan_expr(left, var_types, active_subst)?;
                 self.scan_expr(right, var_types, active_subst)?;
             }
             Expr::UnaryOp { expr: e, .. } => self.scan_expr(e, var_types, active_subst)?,
-            Expr::Ref(e) => self.scan_expr(e, var_types, active_subst)?,
-            Expr::Cast { expr: e, target_type } => {
+            Expr::Ref(e, _) => self.scan_expr(e, var_types, active_subst)?,
+            Expr::Cast { expr: e, target_type, .. } => {
                 self.scan_expr(e, var_types, active_subst)?;
                 let _ = substitute_type(active_subst, target_type);
             }
-            Expr::FunctionCall { name, args } => {
+            Expr::FunctionCall { name, args, .. } => {
                 for a in args {
                     self.scan_expr(a, var_types, active_subst)?;
                 }
-                if let Expr::Identifier(n) = name.as_ref() {
+                if let Expr::Identifier(n, _) = name.as_ref() {
                     // Defer inference failures: a direct `let` with a declared
                     // type re-resolves the call with return-type context below.
                     // (The typechecker runs before codegen and rejects truly
@@ -2683,7 +2685,7 @@ Stmt::Assignment { target, value, .. } => {
                 }
             }
             Expr::FieldAccess { object, .. } => self.scan_expr(object, var_types, active_subst)?,
-            Expr::IndexAccess { object, index } => {
+            Expr::IndexAccess { object, index, .. } => {
                 self.scan_expr(object, var_types, active_subst)?;
                 self.scan_expr(index, var_types, active_subst)?;
             }
@@ -2697,7 +2699,7 @@ Stmt::Assignment { target, value, .. } => {
                     self.scan_expr(a, var_types, active_subst)?;
                 }
             }
-            Expr::Match { expr: e, arms } => {
+            Expr::Match { expr: e, arms, .. } => {
                 self.scan_expr(e, var_types, active_subst)?;
                 // Best-effort: expose pattern bindings to arm bodies so calls
                 // like `identity(x)` inside arms resolve for discovery.
@@ -2725,6 +2727,7 @@ Stmt::Assignment { target, value, .. } => {
                 condition,
                 then_branch,
                 else_branch,
+                ..
             } => {
                 self.scan_expr(condition, var_types, active_subst)?;
                 self.scan_expr(then_branch, var_types, active_subst)?;
@@ -2732,24 +2735,24 @@ Stmt::Assignment { target, value, .. } => {
                     self.scan_expr(e, var_types, active_subst)?;
                 }
             }
-            Expr::Block(stmts) => self.scan_stmts(stmts, var_types, active_subst)?,
+            Expr::Block(stmts, _) => self.scan_stmts(stmts, var_types, active_subst)?,
             Expr::Range { start, end, .. } => {
                 self.scan_expr(start, var_types, active_subst)?;
                 self.scan_expr(end, var_types, active_subst)?;
             }
-            Expr::ArrayLiteral(elems) => {
+            Expr::ArrayLiteral(elems, _) => {
                 for e in elems {
                     self.scan_expr(e, var_types, active_subst)?;
                 }
             }
-            Expr::MapLiteral(pairs) => {
+            Expr::MapLiteral(pairs, _) => {
                 for (k, v) in pairs {
                     self.scan_expr(k, var_types, active_subst)?;
                     self.scan_expr(v, var_types, active_subst)?;
                 }
             }
             Expr::ChannelBounded { capacity, .. } => self.scan_expr(capacity, var_types, active_subst)?,
-            Expr::Await(e) => self.scan_expr(e, var_types, active_subst)?,
+            Expr::Await(e, _) => self.scan_expr(e, var_types, active_subst)?,
         }
         Ok(())
     }
@@ -2805,16 +2808,16 @@ Stmt::Assignment { target, value, .. } => {
     /// call sites. Returns `None` when the type is not statically known.
     fn concrete_type_of(&self, expr: &Expr, var_types: &HashMap<String, Type>) -> Option<Type> {
         match expr {
-            Expr::IntegerLiteral(_) => Some(Type::Int64),
-            Expr::FloatLiteral(_) => Some(Type::Float64),
-            Expr::StringLiteral(_) => Some(Type::String),
-            Expr::BoolLiteral(_) => Some(Type::Bool),
-            Expr::Identifier(name) => var_types.get(name).cloned().map(|t| match t {
+            Expr::IntegerLiteral(_, _) => Some(Type::Int64),
+            Expr::FloatLiteral(_, _) => Some(Type::Float64),
+            Expr::StringLiteral(_, _) => Some(Type::String),
+            Expr::BoolLiteral(_, _) => Some(Type::Bool),
+            Expr::Identifier(name, _) => var_types.get(name).cloned().map(|t| match t {
                 Type::Ref(inner) => *inner,
                 _ => t,
             }),
-            Expr::Ref(inner) => self.concrete_type_of(inner, var_types),
-            Expr::IndexAccess { object, index } => {
+            Expr::Ref(inner, _) => self.concrete_type_of(inner, var_types),
+            Expr::IndexAccess { object, index, .. } => {
                 if matches!(&**index, Expr::Range { .. }) {
                     return match self.concrete_type_of(object, var_types)? {
                         Type::List(elem) => Some(Type::List(elem)),
@@ -2839,7 +2842,7 @@ Stmt::Assignment { target, value, .. } => {
                     None
                 }
             }
-            Expr::ArrayLiteral(elems) => {
+            Expr::ArrayLiteral(elems, _) => {
                 let elem = elems.first().and_then(|e| self.concrete_type_of(e, var_types));
                 Some(Type::List(Box::new(elem.unwrap_or(Type::Void))))
             }
@@ -2848,6 +2851,7 @@ Stmt::Assignment { target, value, .. } => {
                 enum_name,
                 variant,
                 args,
+                ..
             } => {
                 let payload = args
                     .first()
@@ -2864,9 +2868,9 @@ Stmt::Assignment { target, value, .. } => {
                     _ => None,
                 }
             }
-            Expr::FunctionCall { name, args } => {
+            Expr::FunctionCall { name, args, .. } => {
                 let callee = match &**name {
-                    Expr::Identifier(n) => n,
+                    Expr::Identifier(n, _) => n,
                     _ => return None,
                 };
                 if let Some(sig) = self.functions.get(callee) {
@@ -2918,11 +2922,11 @@ Stmt::Assignment { target, value, .. } => {
                 }
                 None
             }
-            Expr::Await(inner) => match self.concrete_type_of(inner, var_types)? {
+            Expr::Await(inner, _) => match self.concrete_type_of(inner, var_types)? {
                 Type::Async(t) => Some(*t),
                 _ => None,
             },
-            Expr::Match { expr, arms } => {
+            Expr::Match { expr, arms, .. } => {
                 // Best-effort: resolve the scrutinee, bind pattern variables,
                 // and require all arm bodies to agree. Anything exotic -> None.
                 let scrut = self.concrete_type_of(expr, var_types)?;
@@ -2944,7 +2948,7 @@ Stmt::Assignment { target, value, .. } => {
                 }
                 result
             }
-            Expr::FieldAccess { object, field } => {
+            Expr::FieldAccess { object, field, .. } => {
                 let ty = self.concrete_type_of(object, var_types)?;
                 if let Type::Custom(obj_name) = ty {
                     let fields = self.struct_fields.get(&obj_name)?;
@@ -2959,7 +2963,7 @@ Stmt::Assignment { target, value, .. } => {
                     None
                 }
             }
-            Expr::UnaryOp { op, expr: e } => match op {
+            Expr::UnaryOp { op, expr: e, .. } => match op {
                 UnaryOp::Not => Some(Type::Bool),
                 UnaryOp::Neg => {
                     let t = self.concrete_type_of(e, var_types)?;
@@ -2970,7 +2974,7 @@ Stmt::Assignment { target, value, .. } => {
                     }
                 }
             },
-            Expr::BinaryOp { left, right, op } => {
+            Expr::BinaryOp { left, right, op, .. } => {
                 let lt = self.concrete_type_of(left, var_types)?;
                 let rt = self.concrete_type_of(right, var_types)?;
                 match op {
@@ -3047,9 +3051,9 @@ Stmt::Assignment { target, value, .. } => {
     fn is_ref_expression(&self, expr: &Expr) -> bool {
         match expr {
             // Explicit reference: &x
-            Expr::Ref(_) => true,
+            Expr::Ref(_, _) => true,
             // Identifier: check variable types
-            Expr::Identifier(name) => {
+            Expr::Identifier(name, _) => {
                 matches!(self.variable_types.get(name), Some(Type::Ref(_)))
             }
             _ => false,
@@ -3060,7 +3064,7 @@ Stmt::Assignment { target, value, .. } => {
     /// method dispatch). Returns the custom type name when known.
     fn resolved_custom_type_name(&self, expr: &Expr) -> Option<String> {
         match expr {
-            Expr::Identifier(name) => match self.variable_types.get(name) {
+            Expr::Identifier(name, _) => match self.variable_types.get(name) {
                 Some(Type::Custom(name)) => Some(name.clone()),
                 Some(Type::Ref(inner)) => match &**inner {
                     Type::Custom(name) => Some(name.clone()),
@@ -3068,7 +3072,7 @@ Stmt::Assignment { target, value, .. } => {
                 },
                 _ => None,
             },
-            Expr::FieldAccess { object, field } => {
+            Expr::FieldAccess { object, field, .. } => {
                 let obj_name = self.resolved_custom_type_name(object)?;
                 let fields = self.struct_fields.get(&obj_name)?;
                 fields
@@ -3088,7 +3092,7 @@ Stmt::Assignment { target, value, .. } => {
                 Type::Custom(name) => Some(name.clone()),
                 _ => None,
             },
-            Expr::Ref(inner) => self.resolved_custom_type_name(inner),
+            Expr::Ref(inner, _) => self.resolved_custom_type_name(inner),
             _ => None,
         }
     }
@@ -3097,16 +3101,16 @@ Stmt::Assignment { target, value, .. } => {
     /// Returns an owned copy to avoid borrow conflicts with &self.
     fn resolved_expr_type(&self, expr: &Expr) -> Option<Type> {
         match expr {
-            Expr::IntegerLiteral(_) => Some(Type::Int64),
-            Expr::FloatLiteral(_) => Some(Type::Float64),
-            Expr::StringLiteral(_) => Some(Type::String),
-            Expr::BoolLiteral(_) => Some(Type::Bool),
-            Expr::Identifier(name) => self.variable_types.get(name).cloned().map(|t| match t {
+            Expr::IntegerLiteral(_, _) => Some(Type::Int64),
+            Expr::FloatLiteral(_, _) => Some(Type::Float64),
+            Expr::StringLiteral(_, _) => Some(Type::String),
+            Expr::BoolLiteral(_, _) => Some(Type::Bool),
+            Expr::Identifier(name, _) => self.variable_types.get(name).cloned().map(|t| match t {
                 Type::Ref(inner) => *inner,
                 _ => t,
             }),
             Expr::Cast { target_type, .. } => Some(target_type.clone()),
-            Expr::FieldAccess { ref object, field } => {
+            Expr::FieldAccess { ref object, field, .. } => {
                 let obj_name = self.resolved_custom_type_name(object)?;
                 let fields = self.struct_fields.get(&obj_name)?;
                 fields
@@ -3117,8 +3121,8 @@ Stmt::Assignment { target, value, .. } => {
                         _ => t.clone(),
                     })
             }
-            Expr::Ref(inner) => self.resolved_expr_type(inner),
-            Expr::ArrayLiteral(elems) => {
+            Expr::Ref(inner, _) => self.resolved_expr_type(inner),
+            Expr::ArrayLiteral(elems, _) => {
                 let elem = elems
                     .first()
                     .and_then(|e| self.resolved_expr_type(e))
@@ -3134,7 +3138,7 @@ Stmt::Assignment { target, value, .. } => {
                     None
                 }
             }
-            Expr::IndexAccess { object, index } => {
+            Expr::IndexAccess { object, index, .. } => {
                 let obj_ty = self.resolved_expr_type(object).map(|t| self.subst_active(&t))?;
                 if matches!(&**index, Expr::Range { .. }) {
                     return match obj_ty {
@@ -3149,7 +3153,7 @@ Stmt::Assignment { target, value, .. } => {
             }
             Expr::FunctionCall { name, .. } => {
                 let callee = match &**name {
-                    Expr::Identifier(n) => n,
+                    Expr::Identifier(n, _) => n,
                     _ => return None,
                 };
                 let sig = self.functions.get(callee)?;
@@ -3183,22 +3187,22 @@ Stmt::Assignment { target, value, .. } => {
 
     fn emit_to_string(&mut self, expr: &Expr) -> Result<(), CodegenError> {
         match expr {
-            Expr::IntegerLiteral(_) => {
+            Expr::IntegerLiteral(_, _) => {
                 write!(self.output, "int64_to_string(").unwrap();
                 self.emit_expression(expr)?;
                 write!(self.output, ")").unwrap();
                 Ok(())
             }
-            Expr::FloatLiteral(_) => {
+            Expr::FloatLiteral(_, _) => {
                 write!(self.output, "float64_to_string(").unwrap();
                 self.emit_expression(expr)?;
                 write!(self.output, ")").unwrap();
                 Ok(())
             }
-            Expr::StringLiteral(_) => {
+            Expr::StringLiteral(_, _) => {
                 self.emit_expression(expr)
             }
-            Expr::Identifier(_) => {
+            Expr::Identifier(_, _) => {
                 self.emit_expression(expr)
             }
             _ => self.emit_expression(expr),
@@ -3800,10 +3804,10 @@ Stmt::Assignment { target, value, .. } => {
 fn is_existing_list_expr(expr: &Expr) -> bool {
     matches!(
         expr,
-        Expr::Identifier(_)
+        Expr::Identifier(_, _)
             | Expr::FieldAccess { .. }
             | Expr::IndexAccess { .. }
-            | Expr::Ref(_)
+            | Expr::Ref(_, _)
     )
 }
 
@@ -3815,7 +3819,7 @@ fn is_existing_list_expr(expr: &Expr) -> bool {
 fn is_fresh_owned_string(&self, expr: &Expr) -> bool {
     match expr {
         Expr::FunctionCall { name, .. } => match name.as_ref() {
-            Expr::Identifier(f) => matches!(
+            Expr::Identifier(f, _) => matches!(
                 f.as_str(),
                 "read_line"
                     | "concat"
