@@ -1,0 +1,88 @@
+// Async + containers: List/Map cross the worker-pool boundary by VALUE.
+// The async result is cached in the handle, so `await` deep-copies: mutating
+// the awaited value must not corrupt subsequent awaits, and freeing it must
+// not invalidate the handle. Channels carry List/Map as cell-copied payloads.
+// main returns 0 only if every check passes (deterministic regardless of
+// GLYPH_WORKERS).
+
+@fn async build_list(n: Int64) -> List<Int64> {
+    let l: List<Int64> = [ ];
+    let i: Int64 = 0;
+    while i < n {
+        l.append(i);
+        i = i + 1;
+    }
+    return l;
+}
+
+@fn async build_map() -> Map<String, Int64> {
+    let m: Map<String, Int64> = #{ "a": 1, "b": 2 };
+    return m;
+}
+
+@fn sum(xs: List<Int64>) -> Int64 {
+    let total: Int64 = 0;
+    for x in xs {
+        total = total + x;
+    }
+    return total;
+}
+
+@fn main() -> Int64 {
+    let ok: Bool = true;
+
+    // 1. await returns an independent copy: mutation must not alias the handle
+    //    cache, and a repeated await must still see the pristine result.
+    let h: Async<List<Int64>> = build_list(4);
+    let a: List<Int64> = h await;
+    a.append(100);
+    if sum(a) != 106 { ok = false; }
+    let b: List<Int64> = h await;
+    if sum(b) != 6 { ok = false; }
+    a.free();
+    b.free();
+
+    // 2. Map return.
+    let hm: Async<Map<String, Int64>> = build_map();
+    let m: Map<String, Int64> = hm await;
+    if m["a"] + m["b"] != 3 { ok = false; }
+    m.free();
+
+    // 3. Channel carrying a List.
+    let ch: Channel<List<Int64>> = Channel<List<Int64>>(2);
+    let src: List<Int64> = [ 3, 4, 5 ];
+    ch.send(src);
+    let gm: Option<List<Int64>> = ch.recv();
+    let got: List<Int64> = match gm {
+        | Some(x) => x,
+        | None => [ -1 ],
+    };
+    if sum(got) != 12 { ok = false; }
+    got.free();
+
+    // 4. select recv with a List payload.
+    let ch2: Channel<List<Int64>> = Channel<List<Int64>>(1);
+    let payload: List<Int64> = [ 7, 8 ];
+    ch2.send(payload);
+    select {
+        | v: List<Int64> <- ch2.recv() => if sum(v) != 15 { ok = false; },
+        | timeout(500) => { ok = false; }
+    }
+
+    // 5. select await with a List payload (deep-copied per arm).
+    let ha: Async<List<Int64>> = build_list(3);
+    select {
+        | v: List<Int64> <- ha await => if sum(v) != 3 { ok = false; },
+        | timeout(500) => { ok = false; }
+    }
+    let again: List<Int64> = ha await;
+    if again.len() != 3 { ok = false; }
+    again.free();
+
+    if ok == false {
+        print("async containers: FAILED");
+        return 1;
+    }
+    print("async containers: all checks passed");
+    return 0;
+}

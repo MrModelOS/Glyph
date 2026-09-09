@@ -188,6 +188,7 @@ impl CCodegen {
         writeln!(self.output, "static inline int glyph_list_eq(GlyphList a, GlyphList b);").unwrap();
         writeln!(self.output, "static inline void glyph_list_retain(GlyphList *l);").unwrap();
         writeln!(self.output, "static inline void glyph_list_free(GlyphList *l);").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_list_copy(GlyphList l);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Maps (chained hash table over string keys)").unwrap();
@@ -199,6 +200,7 @@ impl CCodegen {
         writeln!(self.output, "static inline void* glyph_map_get_or_abort(GlyphMap* m, const char* key, const char* msg);").unwrap();
         writeln!(self.output, "static inline int glyph_map_contains(GlyphMap* m, const char* key);").unwrap();
         writeln!(self.output, "static inline void glyph_map_free(GlyphMap* m);").unwrap();
+        writeln!(self.output, "static inline GlyphMap glyph_map_copy(GlyphMap m);").unwrap();
         writeln!(self.output, "").unwrap();
 
         writeln!(self.output, "// Math").unwrap();
@@ -811,6 +813,14 @@ impl CCodegen {
         )
     }
 
+    /// Is this a value-passed struct that must be copied by value when it
+    /// crosses a thread boundary (async trampoline, channel)? GlyphList and
+    /// GlyphMap are heap-backed C structs, NOT pointers, so they must never
+    /// be cast to `void*` (that would truncate the struct).
+    fn type_is_heap_struct(ty: &Type) -> bool {
+        matches!(ty, Type::List(_) | Type::Map(_, _))
+    }
+
     /// Emit the args struct + pthread trampoline for an async function.
     /// The trampoline calls `cname`, boxes a non-Void result, and returns it.
     fn emit_async_trampoline(
@@ -866,7 +876,7 @@ impl CCodegen {
                 self.emit_indent();
                 writeln!(self.output, "free(_a);").unwrap();
                 self.emit_indent();
-                if Self::type_is_pointer_payload(&t) {
+                if Self::type_is_pointer_payload(&t) && !Self::type_is_heap_struct(&t) {
                     writeln!(self.output, "return (void*)_r;").unwrap();
                 } else if Self::type_is_cell_payload(&t) {
                     writeln!(self.output, "{}* _o = ({}*)malloc(sizeof({}));", c_ret, c_ret, c_ret).unwrap();
@@ -939,7 +949,7 @@ impl CCodegen {
         )
         .unwrap();
         let c_elem = self.type_to_c(elem);
-        if Self::type_is_pointer_payload(elem) {
+        if Self::type_is_pointer_payload(elem) && !Self::type_is_heap_struct(elem) {
             write!(
                 self.output,
                 "__auto_type _p = ({})_cp; glyph_box_construct(1, &_p, sizeof(_p)); ",
@@ -977,6 +987,24 @@ impl CCodegen {
                     self.output,
                     "); {} _av = _ap ? *({}*)_ap : 0; _av; }})",
                     c, c
+                )
+                .unwrap();
+            }
+            t if Self::type_is_heap_struct(t) => {
+                // List/Map: deep-copy out of the handle-owned box so that
+                // freeing the awaited value never corrupts the cached result
+                // (repeated awaits stay safe), and mutation never aliases it.
+                let c = self.type_to_c(t);
+                let copy = match t {
+                    Type::List(_) => "glyph_list_copy",
+                    _ => "glyph_map_copy",
+                };
+                write!(self.output, "({{ void* _ap = glyph_async_await(").unwrap();
+                self.emit_expression(inner)?;
+                write!(
+                    self.output,
+                    "); {} _av = {}(*({}*)_ap); _av; }})",
+                    c, copy, c
                 )
                 .unwrap();
             }
@@ -1180,7 +1208,7 @@ impl CCodegen {
                     self.emit_indent();
                     writeln!(self.output, "if (_sv) {{").unwrap();
                     self.indent += 1;
-                    if Self::type_is_pointer_payload(ty) {
+if Self::type_is_pointer_payload(ty) && !Self::type_is_heap_struct(ty) {
                         // Channels carry pointer-payload values directly (not
                         // boxed): the recv result already IS the value (char*,
                         // GlyphAsync*, ...).
@@ -1203,7 +1231,19 @@ impl CCodegen {
                     let c = self.type_to_c(ty);
                     self.emit_indent();
                     writeln!(self.output, "{} {};", c, name).unwrap();
-                    if Self::type_is_cell_payload(ty) {
+                    if Self::type_is_heap_struct(ty) {
+                        let copy = match ty {
+                            Type::List(_) => "glyph_list_copy",
+                            _ => "glyph_map_copy",
+                        };
+                        self.emit_indent();
+                        writeln!(
+                            self.output,
+                            "{} = {}(*(({}*)glyph_async_await(_so[{}])));",
+                            name, copy, c, e
+                        )
+                        .unwrap();
+                    } else if Self::type_is_cell_payload(ty) {
                         self.emit_indent();
                         writeln!(
                             self.output,
@@ -2024,7 +2064,7 @@ impl CCodegen {
                                 self.emit_expression(object)?;
                                 write!(self.output, ", _cell); }})").unwrap();
                             }
-                            Some(v) if matches!(&elem, Type::Custom(_) | Type::Array(_, _)) => {
+                            Some(v) if matches!(&elem, Type::Custom(_) | Type::Array(_, _) | Type::List(_) | Type::Map(_, _)) => {
                                 write!(self.output, "({{ __auto_type _sv = ").unwrap();
                                 self.emit_expression(v)?;
                                 write!(
@@ -3630,6 +3670,11 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "    l->len = 0;").unwrap();
         writeln!(self.output, "    l->refs = NULL;").unwrap();
         writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "static inline GlyphList glyph_list_copy(GlyphList l) {{").unwrap();
+        writeln!(self.output, "    GlyphList n = glyph_list_new(l.elem_size, l.len);").unwrap();
+        writeln!(self.output, "    if (l.len > 0) memcpy(n.data, l.data, (size_t)(l.len * l.elem_size));").unwrap();
+        writeln!(self.output, "    return n;").unwrap();
+        writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
         // Maps: FNV-1a hash over string keys, chained buckets, memcpy values.
@@ -3696,6 +3741,13 @@ Stmt::Assignment { target, value, .. } => {
         writeln!(self.output, "    }}").unwrap();
         writeln!(self.output, "    free(m->buckets);").unwrap();
         writeln!(self.output, "    m->buckets = NULL; m->size = 0;").unwrap();
+        writeln!(self.output, "}}").unwrap();
+        writeln!(self.output, "static inline GlyphMap glyph_map_copy(GlyphMap m) {{").unwrap();
+        writeln!(self.output, "    GlyphMap n = glyph_map_new(m.elem_size);").unwrap();
+        writeln!(self.output, "    for (int64_t i = 0; i < m.bucket_count; i++) {{").unwrap();
+        writeln!(self.output, "        for (GlyphMapEntry* e = m.buckets[i]; e; e = e->next) glyph_map_put(&n, e->key, e->value);").unwrap();
+        writeln!(self.output, "    }}").unwrap();
+        writeln!(self.output, "    return n;").unwrap();
         writeln!(self.output, "}}").unwrap();
         writeln!(self.output, "").unwrap();
 
