@@ -684,6 +684,36 @@ impl TypeChecker {
         Ok(ret)
     }
 
+    fn check_if_statement(&mut self, ifexpr: &Expr) -> Result<Type, TypeError> {
+        let Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } = ifexpr
+        else {
+            return self.check_expression(ifexpr);
+        };
+
+        let cond_type = self.check_expression(condition)?;
+        if !matches!(cond_type, Type::Bool) {
+            return Err(TypeError::TypeMismatch {
+                expected: "Bool".to_string(),
+                found: format!("{}", cond_type),
+            });
+        }
+
+        let then_type = self.check_expression(then_branch)?;
+        if else_branch.is_none() {
+            return Ok(Type::Void);
+        }
+        let _ = self.check_expression(else_branch.as_ref().unwrap())?;
+        // Statement form: keep the then-branch type without requiring the
+        // branches to share a value type, so guard chains and branches that
+        // diverge via `return` typecheck.
+        Ok(then_type)
+    }
+
     fn check_statement(&mut self, stmt: &Stmt) -> Result<Option<Type>, TypeError> {
         match stmt {
             Stmt::Let {
@@ -758,7 +788,14 @@ impl TypeChecker {
                 Ok(None)
             }
             Stmt::Expression(_, expr) => {
-                let ty = self.check_expression(expr)?;
+                // Statement-position `if` is allowed to have branches without a
+                // common value (e.g. `if a { return 1; } else if b { return 2; }`
+                // guard chains); only `if` used as a value requires it.
+                let ty = if matches!(expr, Expr::If { .. }) {
+                    self.check_if_statement(expr)?
+                } else {
+                    self.check_expression(expr)?
+                };
                 Ok(Some(ty))
             }
             Stmt::Return(_, expr) => {
@@ -1607,9 +1644,7 @@ impl TypeChecker {
                 let then_type = self.check_expression(then_branch)?;
 
                 if let Some(else_expr) = else_branch {
-                    let _else_type = self.check_expression(else_expr)?;
-                    // TODO: Find common type
-                    Ok(then_type)
+                    self.common_if_type(then_branch, then_type, else_expr)
                 } else {
                     Ok(Type::Void)
                 }
@@ -1956,6 +1991,57 @@ impl TypeChecker {
             && matches!(expected, Type::Int64 | Type::UInt64 | Type::Float64)
     }
 
+    /// Resulting type of an `if` expression from its two branches. Both branches
+/// must evaluate to a value of a common type (matching the codegen, which can
+/// only produce a value when both branches yield one); an integer literal
+/// branch promotes to the other numeric branch (`if c { 1 } else { 2.5 }` is
+/// Float64).
+    fn common_if_type(
+        &mut self,
+        then_branch: &Expr,
+        then_type: Type,
+        else_expr: &Expr,
+    ) -> Result<Type, TypeError> {
+        let else_type = self.check_expression(else_expr)?;
+
+        if self.types_compatible(&then_type, &else_type) {
+            return Ok(then_type);
+        }
+        if let Some(lit) = self.trailing_int_literal(then_branch) {
+            if self.int_literal_satisfies(&else_type, &Type::Int64, lit) {
+                return Ok(else_type);
+            }
+        }
+        if let Some(lit) = self.trailing_int_literal(else_expr) {
+            if self.int_literal_satisfies(&then_type, &Type::Int64, lit) {
+                return Ok(then_type);
+            }
+        }
+        Err(TypeError::TypeMismatch {
+            expected: format!("{}", then_type),
+            found: format!("{}", else_type),
+        })
+    }
+
+    /// The integer literal evaluating as the branch's value, if the branch
+    /// (usually a block ending with an expression statement) yields one.
+    fn trailing_int_literal<'a>(&self, expr: &'a Expr) -> Option<&'a Expr> {
+        match expr {
+            Expr::IntegerLiteral(_, _) => Some(expr),
+            Expr::Block(stmts, _) => match stmts.last() {
+                Some(Stmt::Expression(_, e)) => {
+                    if matches!(e, Expr::IntegerLiteral(_, _)) {
+                        Some(e)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn types_compatible(&self, a: &Type, b: &Type) -> bool {
         match (a, b) {
             (Type::String, Type::String) => true,
@@ -2080,6 +2166,88 @@ mod tests {
 
         let mut checker = TypeChecker::new();
         assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_if_expression_branches_share_common_type() {
+        let input = "\
+@fn main() -> Void {
+    let c: Bool = true;
+    let a: Int64 = if c { 1; } else { 2; };
+    let b: Float64 = if c { 3.5; } else { 4.5; };
+    print_int(a);
+    print_float(b);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_if_expression_promotes_integer_literal_branch() {
+        let input = "\
+@fn main() -> Void {
+    let c: Bool = true;
+    let b: Float64 = if c { 1; } else { 2.5; };
+    print_float(b);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        assert!(checker.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn test_if_expression_rejects_mismatched_branch_types() {
+        let input = "\
+@fn main() -> Void {
+    let c: Bool = true;
+    let x: Int64 = 5;
+    let b: Float64 = if c { x; } else { 2.5; };
+    print_float(b);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        match checker.check_program(&program) {
+            Ok(()) => panic!("expected TypeMismatch"),
+            Err(e) => {
+                let s = format!("{}", e);
+                assert!(s.contains("Type mismatch"), "{}", s);
+                assert!(s.contains("Int64"), "{}", s);
+                assert!(s.contains("Float64"), "{}", s);
+            }
+        }
+    }
+
+    #[test]
+    fn test_if_expression_rejects_void_branch_as_value() {
+        let input = "\
+@fn main() -> Void {
+    let c: Bool = true;
+    let a: Int64 = if c { 5; } else { let z: Int64 = 1; };
+    print_int(a);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        match checker.check_program(&program) {
+            Ok(()) => panic!("expected TypeMismatch"),
+            Err(e) => assert!(format!("{}", e).contains("Type mismatch"), "{}", e),
+        }
     }
 
     #[test]

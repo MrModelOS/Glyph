@@ -202,6 +202,15 @@ if x > 0 {
 }
 ```
 
+`if` is also an expression: when both branches evaluate to a value of the same
+type, the whole `if/else` has that type and can be assigned. An integer literal
+branch promotes to a sibling's `Float64`/`UInt64` type.
+
+```glyph
+let hi: Int64 = if coins > 100 { 2; } else { 1; };
+let scale: Float64 = if fast { 1.5; } else { 1; };
+```
+
 ### while
 
 ```glyph

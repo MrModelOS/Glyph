@@ -1,0 +1,16 @@
+@fn clamp_to(v: Int64, a: Int64, b: Int64) -> Int64 {
+    if v < a { return a; } else if v > b { return b; }
+    return v;
+}
+@fn main() -> Int64 {
+    let c: Bool = (3 > 2);
+    let hi: Int64 = if c { 1; } else { 2; };
+    let pi: Float64 = if !c { 1; } else { 2.5; };
+    print_int(hi);
+    print_float(pi);
+    print_int(clamp_to(9, 3, 7));
+    print_int(clamp_to(5, 3, 7));
+    print_int(clamp_to(2, 3, 7));
+    if hi == 1 { print_int(1); }
+    if pi < 0.0 { return 1; } else { return 0; }
+}

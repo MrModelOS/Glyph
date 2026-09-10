@@ -731,10 +731,20 @@ impl CCodegen {
             // Only for non-void return types
             if is_last && return_type.is_some() && !matches!(return_type, Some(Type::Void)) {
                 if let Stmt::Expression(_, expr) = stmt {
-                    self.emit_indent();
-                    write!(self.output, "return ").unwrap();
-                    self.emit_expression(expr)?;
-                    writeln!(self.output, ";").unwrap();
+                    // Only wrap in `return` when the expression actually yields
+                    // a value; void calls and non-value statements (e.g. an
+                    // `if` guard without a scalar result) must not be turned
+                    // into `return (void-expr);`.
+                    if let Some(ty) = self.resolved_expr_type(expr) {
+                        if !matches!(ty, Type::Void) {
+                            self.emit_indent();
+                            write!(self.output, "return ").unwrap();
+                            self.emit_expression(expr)?;
+                            writeln!(self.output, ";").unwrap();
+                            continue;
+                        }
+                    }
+                    self.emit_statement(stmt)?;
                     continue;
                 }
             }
@@ -2393,7 +2403,54 @@ if Self::type_is_pointer_payload(ty) && !Self::type_is_heap_struct(ty) {
                 else_branch,
                 ..
             } => {
-                // Use GNU Statement Expression for if expression
+                // Value-producing if: both branches yield the same scalar type,
+                // so capture into a temp to give the statement expression a value.
+                if let Some(else_expr) = else_branch {
+                    if let Some(ty) = self.if_result_type(then_branch, else_expr) {
+                        let c_ty = self.type_to_c(&ty);
+                        writeln!(self.output, "({{").unwrap();
+                        self.indent += 1;
+
+                        self.emit_indent();
+                        writeln!(self.output, "{} _if_tmp;", c_ty).unwrap();
+
+                        self.emit_indent();
+                        write!(self.output, "if (").unwrap();
+                        self.emit_expression(condition)?;
+                        writeln!(self.output, ") {{").unwrap();
+                        self.indent += 1;
+
+                        self.emit_indent();
+                        write!(self.output, "_if_tmp = ").unwrap();
+                        self.emit_expression(then_branch)?;
+                        writeln!(self.output, ";").unwrap();
+
+                        self.indent -= 1;
+                        self.emit_indent();
+                        writeln!(self.output, "}} else {{").unwrap();
+                        self.indent += 1;
+
+                        self.emit_indent();
+                        write!(self.output, "_if_tmp = ").unwrap();
+                        self.emit_expression(else_expr)?;
+                        writeln!(self.output, ";").unwrap();
+
+                        self.indent -= 1;
+                        self.emit_indent();
+                        writeln!(self.output, "}}").unwrap();
+
+                        self.indent -= 1;
+                        self.emit_indent();
+                        writeln!(self.output, "_if_tmp;").unwrap();
+                        self.emit_indent();
+                        writeln!(self.output, "}})").unwrap();
+                        return Ok(());
+                    }
+                }
+
+                // Otherwise (statement-only if, or non-scalar branches) use a
+                // plain GNU statement expression with the `if` as its last
+                // statement; its value (if any) is only meaningful when void.
                 writeln!(self.output, "({{").unwrap();
                 self.indent += 1;
 
@@ -3068,6 +3125,66 @@ Stmt::Assignment { target, value, .. } => {
         }
     }
 
+    /// The value a branch yields, if it is a plain (non-void) expression.
+    fn branch_yield_type(&self, branch: &Expr) -> Option<Type> {
+        let t = match branch {
+            Expr::Block(stmts, _) => match stmts.last() {
+                Some(Stmt::Expression(_, e)) => self.resolved_expr_type(e),
+                _ => None,
+            },
+            _ => self.resolved_expr_type(branch),
+        }?;
+        if matches!(t, Type::Void) {
+            None
+        } else {
+            Some(t)
+        }
+    }
+
+    /// True when the branch's block evaluates an integer literal last.
+    fn branch_yields_int_literal(&self, branch: &Expr) -> bool {
+        match branch {
+            Expr::IntegerLiteral(_, _) => true,
+            Expr::Block(stmts, _) => matches!(
+                stmts.last(),
+                Some(Stmt::Expression(_, Expr::IntegerLiteral(_, _)))
+            ),
+            _ => false,
+        }
+    }
+
+    fn is_scalar_if_type(&self, t: &Type) -> bool {
+        matches!(t, Type::Int64 | Type::UInt64 | Type::Float64 | Type::Bool)
+    }
+
+    /// Common scalar type of an if-expression's two branches, if any. Branch
+    /// types must match; an integer literal branch promotes to the sibling's
+    /// floating type (`if c { 1; } else { 2.5; }` is Float64), mirroring the
+    /// typechecker's `common_if_type`.
+    fn if_result_type(&self, then_branch: &Expr, else_expr: &Expr) -> Option<Type> {
+        let tt = self.branch_yield_type(then_branch)?;
+        let et = self.branch_yield_type(else_expr)?;
+        if !self.is_scalar_if_type(&tt) || !self.is_scalar_if_type(&et) {
+            return None;
+        }
+        if tt == et {
+            return Some(tt);
+        }
+        if matches!(&tt, Type::Int64)
+            && matches!(&et, Type::Float64)
+            && self.branch_yields_int_literal(then_branch)
+        {
+            return Some(Type::Float64);
+        }
+        if matches!(&et, Type::Int64)
+            && matches!(&tt, Type::Float64)
+            && self.branch_yields_int_literal(else_expr)
+        {
+            return Some(Type::Float64);
+        }
+        None
+    }
+
     fn binop_to_c(&self, op: &BinOp) -> &str {
         match op {
             BinOp::Add => "+",
@@ -3178,6 +3295,20 @@ Stmt::Assignment { target, value, .. } => {
                     None
                 }
             }
+            Expr::If { then_branch, else_branch, .. } => match else_branch {
+                Some(e) => self.if_result_type(then_branch, e),
+                None => Some(Type::Void),
+            },
+            Expr::Block(stmts, _) => match stmts.last() {
+                Some(Stmt::Expression(_, e)) => self
+                    .resolved_expr_type(e)
+                    .filter(|t| !matches!(t, Type::Void)),
+                _ => None,
+            },
+            Expr::Match { arms, .. } => arms
+                .last()
+                .and_then(|a| self.resolved_expr_type(&a.body))
+                .filter(|t| !matches!(t, Type::Void)),
             Expr::IndexAccess { object, index, .. } => {
                 let obj_ty = self.resolved_expr_type(object).map(|t| self.subst_active(&t))?;
                 if matches!(&**index, Expr::Range { .. }) {
