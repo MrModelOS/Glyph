@@ -203,8 +203,10 @@ if x > 0 {
 ```
 
 `if` is also an expression: when both branches evaluate to a value of the same
-type, the whole `if/else` has that type and can be assigned. An integer literal
-branch promotes to a sibling's `Float64`/`UInt64` type.
+scalar type (`Int64`, `UInt64`, `Float64`, `Bool`), the whole `if/else` has that
+type and can be assigned. An integer literal branch promotes to a sibling's
+`Float64`/`UInt64` type. Heap-typed branches (`String`, `List<T>`, structs) are
+not supported as `if` expression values.
 
 ```glyph
 let hi: Int64 = if coins > 100 { 2; } else { 1; };

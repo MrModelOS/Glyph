@@ -2004,23 +2004,42 @@ impl TypeChecker {
     ) -> Result<Type, TypeError> {
         let else_type = self.check_expression(else_expr)?;
 
-        if self.types_compatible(&then_type, &else_type) {
-            return Ok(then_type);
-        }
-        if let Some(lit) = self.trailing_int_literal(then_branch) {
+        let result = if self.types_compatible(&then_type, &else_type) {
+            then_type
+        } else if let Some(lit) = self.trailing_int_literal(then_branch) {
             if self.int_literal_satisfies(&else_type, &Type::Int64, lit) {
-                return Ok(else_type);
+                else_type
+            } else {
+                return Err(TypeError::TypeMismatch {
+                    expected: format!("{}", then_type),
+                    found: format!("{}", else_type),
+                });
             }
-        }
-        if let Some(lit) = self.trailing_int_literal(else_expr) {
+        } else if let Some(lit) = self.trailing_int_literal(else_expr) {
             if self.int_literal_satisfies(&then_type, &Type::Int64, lit) {
-                return Ok(then_type);
+                then_type
+            } else {
+                return Err(TypeError::TypeMismatch {
+                    expected: format!("{}", then_type),
+                    found: format!("{}", else_type),
+                });
             }
+        } else {
+            return Err(TypeError::TypeMismatch {
+                expected: format!("{}", then_type),
+                found: format!("{}", else_type),
+            });
+        };
+
+        // A value if/else can only carry a scalar result: the codegen has no
+        // value-producing form for heap-typed branches.
+        if !matches!(result, Type::Int64 | Type::UInt64 | Type::Float64 | Type::Bool) {
+            return Err(TypeError::TypeMismatch {
+                expected: "Int64, UInt64, Float64 or Bool".to_string(),
+                found: format!("{}", result),
+            });
         }
-        Err(TypeError::TypeMismatch {
-            expected: format!("{}", then_type),
-            found: format!("{}", else_type),
-        })
+        Ok(result)
     }
 
     /// The integer literal evaluating as the branch's value, if the branch
@@ -2247,6 +2266,30 @@ mod tests {
         match checker.check_program(&program) {
             Ok(()) => panic!("expected TypeMismatch"),
             Err(e) => assert!(format!("{}", e).contains("Type mismatch"), "{}", e),
+        }
+    }
+
+    #[test]
+    fn test_if_expression_rejects_non_scalar_branches_as_value() {
+        let input = "\
+@fn main() -> Void {
+    let c: Bool = true;
+    let s: String = if c { \"a\"; } else { \"b\"; };
+    print(s);
+}";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().unwrap();
+
+        let mut checker = TypeChecker::new();
+        match checker.check_program(&program) {
+            Ok(()) => panic!("expected TypeMismatch"),
+            Err(e) => {
+                let msg = format!("{}", e);
+                assert!(msg.contains("Type mismatch"), "{}", msg);
+                assert!(msg.contains("String"), "{}", msg);
+            }
         }
     }
 
