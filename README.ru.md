@@ -3,9 +3,9 @@
 [English](README.md) | Русский
 
 [![CI](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml/badge.svg)](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/glyphc-v1.3.0-blue)
+![version](https://img.shields.io/badge/glyphc-v2.0.0-blue)
 
-Компилятор языка программирования **Glyph** v1.3.0, написанный на Rust.
+Компилятор языка программирования **Glyph** v2.0.0, написанный на Rust.
 
 Glyph транслируется в C-код (GNU statement expressions) и собирается через GCC или clang.
 Скомпилированные программы — обычные нативные бинарники.
@@ -411,25 +411,31 @@ Glyph компилируется в C и наследует C-тулчейн: с
 +LTO; порядок величин, не строгий бенчмарк).
 
 ```
-workload        glyph      c      rust   ratio (glyph/c)
-loop_sum         440ms   443ms   503ms        0.99x
-list_append       35ms    29ms    44ms        1.21x
-map_put_get      157ms   144ms   161ms        1.09x
+workload        glyph     c      rust   ratio (glyph/c)
+loop_sum         476ms  471ms   549ms        1.01x
+list_append       13ms   14ms    14ms        0.93x
+map_put_get       43ms   40ms    43ms        1.07x
 ```
 
-Железо: 11th Gen Intel Core i5-1135G7, 2026-09-09. `loop_sum` суммирует
-`i % 7` по runtime-размеру (400M итераций); `list_append` — 20M int64 в
-динамический массив и суммирование; `map_put_get` — 2M put+get строковых ключей
-(разброс по 100 ключам). Воспроизводится `bench/gen.sh` + `bench/run.sh`.
+Железо: 11th Gen Intel Core i5-1135G7, 2026-09-10. `loop_sum` суммирует
+`i % 7` по runtime-размеру (400M итераций); `list_append` — 5M int64 в
+динамический массив и суммирование; `map_put_get` — 500k put+get строковых ключей
+(разброс по 100 ключам). Все три реализации дают идентичный вывод.
+Воспроизводится:
 
-- `loop_sum` — паритет с C (движок цикла/арифметика идентичны gcc)
+```bash
+bash bench/gen.sh /tmp/bench 5000000
+LOOP_IN=400000000 bash bench/run.sh /tmp/bench
+```
+
+- `loop_sum` — паритет с C (1.01x) и чуть быстрее Rust (549ms против 476ms):
+  движок цикла/арифметика идентичны тому, что gcc написал бы вручную.
 - `list_append` — refcounted growable-буфер с геометрическим удвоением ёмкости:
   append амортизированно O(1), как у C-массива; рантайм-хелперы `static inline`,
-  горячая петля инлайнится в обычный store. Остаток ~20% — refcount и служебные
-  поля ёмкости.
+  горячая петля инлайнится в обычный store — паритет с C.
 - `map_put_get` — геометрический рехеш при load factor > 0.75; временные ключи,
   построенные `int_to_string`/`++`/`substring`..., освобождаются сразу после
-  put/get/index (раньше они текли). 1.09x — между C (фиксированные 256 корзин)
+  put/get/index (раньше они текли). 1.07x — между C (фиксированные 256 корзин)
   и Rust hashbrown.
 
 ## Ограничения

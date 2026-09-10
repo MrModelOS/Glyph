@@ -1,7 +1,7 @@
 # Glyph Language Compiler (glyphc)
 
 [![CI](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml/badge.svg)](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/glyphc-v1.3.0-blue)
+![version](https://img.shields.io/badge/glyphc-v2.0.0-blue)
 
 The **Glyph** programming language compiler, written in Rust.
 
@@ -68,6 +68,13 @@ are published on the [Releases](/MrModelOS/Glyph/releases) page.
 ```bash
 glyphc run --input hello.glyph
 # Hello, World!
+```
+
+There is also a real interactive demo — the 15-puzzle — with lists, slicing,
+`read_line`, and `@test`s:
+
+```bash
+glyphc run --input examples/fifteen.glyph
 ```
 
 ## CLI
@@ -159,7 +166,7 @@ Concurrency, modules, and asserts are documented in [docs/language.md](docs/lang
 
 ```bash
 cargo build
-cargo test          # 51 unit tests (lexer, parser, typechecker, codegen)
+cargo test          # 83 unit tests (lexer, parser, typechecker, codegen, lsp)
 examples/run_all.sh # compiles and runs every example
 glyphc test -i examples/fifteen.glyph
 ```
@@ -175,33 +182,39 @@ Glyph compiles to C and inherits the C toolchain: scalar code compiles to the
 same machine code, and the runtime overhead is proportional to the
 allocation/GC features you use. The table below compares identical algorithms
 on one machine (min of 3 runs, gcc 16.2.1 `-O2`, rustc 1.98.1 `--release` with
-LTO, meant to show the ballpark, not to be a rigorous benchmark).
+LTO; meant to show the ballpark, not to be a rigorous benchmark).
 
 ```
-workload        glyph      c      rust   ratio (glyph/c)
-loop_sum         440ms   443ms   503ms        0.99x
-list_append       35ms    29ms    44ms        1.21x
-map_put_get      157ms   144ms   161ms        1.09x
+workload        glyph     c      rust   ratio (glyph/c)
+loop_sum         476ms  471ms   549ms        1.01x
+list_append       13ms   14ms    14ms        0.93x
+map_put_get       43ms   40ms    43ms        1.07x
 ```
 
-Hardware: 11th Gen Intel Core i5-1135G7, 2026-09-09. `loop_sum` sums
-`i % 7` over a runtime size (400M iterations); `list_append` appends 20M
-int64s to a dynamic array and sums them; `map_put_get` puts+gets 2M string-key
-entries into a 100-key churn. Reproduce with `bench/gen.sh` + `bench/run.sh`.
+Hardware: 11th Gen Intel Core i5-1135G7, 2026-09-10. `loop_sum` sums
+`i % 7` over a runtime size (400M iterations); `list_append` appends 5M
+int64s to a dynamic array and sums them; `map_put_get` puts+gets 500k
+string-key entries across a 100-key churn. All three implementations produce
+identical output. Reproduce with:
+
+```bash
+bash bench/gen.sh /tmp/bench 5000000
+LOOP_IN=400000000 bash bench/run.sh /tmp/bench
+```
 
 Notes:
 
-- `loop_sum` is at parity with C — the loop, modulo and integer arithmetic emit
-  the same code gcc would write by hand.
+- `loop_sum` is at parity with C (1.01x) and edges out Rust (549ms vs 476ms) —
+  the loop, modulo and integer arithmetic emit the same code gcc would write
+  by hand, minus LLVM's optimizer noise on the hot induction loop.
 - `list_append` uses a refcounted growable buffer that doubles its capacity
   geometrically, so appends amortize to O(1) like C's `realloc` array; the
   runtime helpers are `static inline`, so the hot loop inlines to a plain
-  store. The ~20% residual is the refcount and capacity bookkeeping.
+  store — at parity with C.
 - `map_put_get` rehashes geometrically (load factor ≤ 0.75) and keys built
   temporarily by `int_to_string`/`++`/`substring`... are freed right after the
   put/get/index call, so the string churn that used to be measured (and leak)
-  is gone. At 1.09x it sits between C (fixed 256 buckets) and Rust's
-  hashbrown.
+  is gone. At 1.07x it sits between C (fixed 256 buckets) and Rust's hashbrown.
 
 ## Limitations
 
