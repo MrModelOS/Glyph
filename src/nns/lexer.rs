@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Lexer — port of `ns/lexer/lexer.cpp`.
 
 use super::token::{Token, TokenType};

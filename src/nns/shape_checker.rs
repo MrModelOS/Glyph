@@ -1,7 +1,9 @@
+#![allow(dead_code)]
 //! Shape & type checker — port of `ns/typechecker/shape_checker.cpp`.
 
 use super::ast::{DimExpr, Dtype, Expr, ExprKind, Program, Stmt, StmtKind, TensorType, TypeNode};
 use super::token::TokenType;
+use super::type_system::{resolve_dim_symbolic, resolve_symbolic_via_bindings, SymbolBinding};
 use std::collections::HashMap;
 
 // Result of shape checking / inference
@@ -133,13 +135,6 @@ struct FuncSig {
     return_type: Option<TypeNode>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct SymbolBinding {
-    bound_to_const: bool,
-    const_value: i64,
-    binds_to: String, // another symbolic name, if not const
-}
-
 pub struct ShapeChecker {
     errors_: Vec<ShapeError>,
     // Symbol table for type aliases: name -> DimExpr (alias constants)
@@ -268,17 +263,18 @@ impl ShapeChecker {
     }
 
     fn check_var_decl(&mut self, stmt: &mut Stmt) {
-        // Expand symbolic dims from type aliases
+        // Expand symbolic dims from type aliases — delegated to type_system
         if let Some(var_type) = stmt.var_type.as_mut() {
             if var_type.is_tensor() {
                 for dim in var_type.tensor_type.dims.iter_mut() {
-                    if dim.kind == super::ast::DimExprKind::Symbolic {
-                        if let Some(alias) = self.type_aliases_.get(&dim.symbolic_name) {
-                            if alias.is_const() {
-                                *dim = alias.clone();
+                    if dim.is_symbolic() {
+                        if let Some(resolved) = resolve_dim_symbolic(&dim.symbolic_name, &self.type_aliases_) {
+                            if resolved.is_const() {
+                                *dim = resolved;
                             }
+                            // Symbolic alias stays symbolic (dependent type) — only
+                            // const aliases are expanded here.
                         }
-                        // Unknown symbolic stays symbolic (dependent type)
                     }
                 }
             }
@@ -1063,28 +1059,8 @@ impl ShapeChecker {
         if !d.is_symbolic() {
             return d.clone();
         }
-        // Follow bindings
-        let mut cur = d.symbolic_name.clone();
-        let mut seen = std::collections::HashSet::new();
-        loop {
-            if seen.contains(&cur) {
-                break;
-            }
-            seen.insert(cur.clone());
-            match self.symbols_.get(&cur) {
-                None => break,
-                Some(sb) => {
-                    if sb.bound_to_const {
-                        return DimExpr::constant(sb.const_value);
-                    }
-                    if sb.binds_to.is_empty() {
-                        break;
-                    }
-                    cur = sb.binds_to.clone();
-                }
-            }
-        }
-        DimExpr::symbolic(&cur)
+        // Delegated to type_system — follows symbol bindings (unify_dim constraints)
+        resolve_symbolic_via_bindings(&d.symbolic_name, &self.symbols_)
     }
 
     fn resolve_tensor(&self, t: &TensorType) -> TensorType {
@@ -1096,10 +1072,11 @@ impl ShapeChecker {
     }
 
     fn bind_alias_dim(&mut self, dim: &mut DimExpr) {
-        if dim.kind == super::ast::DimExprKind::Symbolic {
-            if let Some(alias) = self.type_aliases_.get(&dim.symbolic_name).cloned() {
-                if alias.is_const() {
-                    *dim = alias;
+        if dim.is_symbolic() {
+            // Delegated to type_system — resolves via type alias table
+            if let Some(resolved) = resolve_dim_symbolic(&dim.symbolic_name, &self.type_aliases_) {
+                if resolved.is_const() {
+                    *dim = resolved;
                 } // symbolic alias keeps symbolic
             }
         }
@@ -1240,5 +1217,120 @@ trait TypeNodeFromTensor {
 impl TypeNodeFromTensor for TensorType {
     fn into_type_node_scalar_check(self) -> TypeNode {
         TypeNode::tensor(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nns::codegen::codegen::{CodeGenerator, CodegenOptions, TargetBackend};
+    use crate::nns::lexer::Lexer;
+    use crate::nns::mlir::fusion::FusionPass;
+    use crate::nns::mlir::mlir_compiler::MLIRCompiler;
+    use crate::nns::parser::Parser;
+
+    const DYNAMIC_IN_DENSE: &str = r#"
+type Bs = Dynamic
+network N {
+    input:  Tensor[Bs, 4] float32
+    output: Tensor[Bs, 4] float32
+    layer fc1 = Dense(in: Dynamic, out: 16, activation: ReLU)
+    layer fc2 = Dense(in: 16, out: 4, activation: Identity)
+    forward(x) {
+        return x -> fc1 -> fc2
+    }
+}
+"#;
+
+    const VALID_DYNAMIC_BATCH: &str = r#"
+type Bs = Dynamic
+network N {
+    input:  Tensor[Bs, 4] float32
+    output: Tensor[Bs, 4] float32
+    layer fc1 = Dense(in: 4, out: 16, activation: ReLU)
+    layer fc2 = Dense(in: 16, out: 4, activation: Identity)
+    forward(x) {
+        return x -> fc1 -> fc2
+    }
+}
+"#;
+
+    fn codegen_result(src: &str, backend: TargetBackend) -> Result<String, String> {
+        let mut lexer = Lexer::new(src);
+        let toks = lexer.tokenize().map_err(|e| e.to_string())?;
+        let mut parser = Parser::new(toks);
+        let mut prog = parser.parse_program().map_err(|e| e.to_string())?;
+        let mut checker = ShapeChecker::new();
+        let _ok = checker.check(&mut prog);
+        // shape errors are not fatal here; codegen is the gate for dynamic dims
+        let mut mlir = MLIRCompiler::new();
+        let mut module = mlir.compile(&mut prog);
+        let mut fuse = FusionPass::new();
+        fuse.run(&mut module);
+        let mut opts = CodegenOptions::default();
+        opts.backend = backend;
+        opts.emit_runtime_driver = true;
+        let cg = CodeGenerator::default();
+        cg.generate(&module, &opts).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn dynamic_dims_cpu_negative_returns_error() {
+        let res = codegen_result(DYNAMIC_IN_DENSE, TargetBackend::CpuCxx);
+        assert!(res.is_err(), "expected dynamic-dims network to be rejected, got Ok");
+        let msg = res.unwrap_err();
+        assert!(
+            msg.contains("cannot infer static shape") && msg.contains("dynamic dims are not supported"),
+            "unexpected error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn dynamic_dims_cuda_negative_returns_error() {
+        let res = codegen_result(DYNAMIC_IN_DENSE, TargetBackend::Cuda);
+        assert!(res.is_err(), "expected dynamic-dims network to be rejected on CUDA");
+        let msg = res.unwrap_err();
+        assert!(
+            msg.contains("cannot infer static shape") && msg.contains("dynamic dims are not supported"),
+            "unexpected CUDA error: {}",
+            msg
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot infer static shape")]
+    fn dynamic_dims_cpu_should_panic() {
+        // Mirrors test_dynamic_dims.cpp: codegen must throw / return Err so unwrap panics
+        codegen_result(DYNAMIC_IN_DENSE, TargetBackend::CpuCxx).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot infer static shape")]
+    fn dynamic_dims_cuda_should_panic() {
+        codegen_result(DYNAMIC_IN_DENSE, TargetBackend::Cuda).unwrap();
+    }
+
+    #[test]
+    fn dynamic_batch_only_is_allowed() {
+        // Only the batch dim is Dynamic — this is the single allowed dynamic dim
+        let res = codegen_result(VALID_DYNAMIC_BATCH, TargetBackend::CpuCxx);
+        assert!(res.is_ok(), "valid dynamic-batch network should codegen, got Err: {:?}", res.err());
+    }
+
+    #[test]
+    fn valid_network_produces_code() {
+        let res = codegen_result(VALID_DYNAMIC_BATCH, TargetBackend::Cuda);
+        assert!(res.is_ok(), "valid network CUDA codegen failed: {:?}", res.err());
+        let code = res.unwrap();
+        assert!(!code.is_empty());
+    }
+
+    #[test]
+    fn resolve_dim_symbolic_via_type_system() {
+        let mut aliases = std::collections::HashMap::new();
+        aliases.insert("Hidden".to_string(), DimExpr::constant(32));
+        let r = crate::nns::type_system::resolve_dim_symbolic("Hidden", &aliases).unwrap();
+        assert_eq!(r.const_value, 32);
     }
 }

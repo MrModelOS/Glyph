@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Kernel fusion pass — port of `ns/mlir/fusion.cpp`.
 //!
 //! Groups elementwise epilogues (activations, layer-norm) onto their

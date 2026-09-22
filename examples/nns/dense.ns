@@ -1,0 +1,184 @@
+// NeuralScript Dense reference model for the MX450 parameter-vs-loss study.
+//
+// Identical transformer trunk to neumoe.ns / static.ns, but the final block
+// uses a single WIDE FFN (d -> wide -> d, GELU) with the same parameter
+// budget as the full-capacity MoE route. wide is derived so that
+// 4*d*d + 2*d*wide == task 1 of the shared 7 (4*d*d + 2*d*ffn) + bf
+// + moe_g + moe_e, i.e. the dense model holds the FULL compile-time
+// parameter count of the MoE variants:
+//
+//   wide = (4*d*d + 2*d*ffn + bf + moe_g + moe_e - 4*d*d) / (2*d)
+//        = (4*512*512 + 2*512*2048 + 2*512*2048 + 512*9
+//           + 9*2*512*2048 - 4*512*512) / (2*512)
+//        = 20484
+//
+//   budget: trunk 7 * (4*512*512 + 2*512*2048) = 22,020,096
+//           m_attn 4*512*512 = 1,048,576
+//           wideFFN 2*512*20484 = 20,975,616
+//           emb + head 2*10240*512 = 10,485,760
+//           TOTAL = 54,530,048 floats  (== MoE variants' full K=9 prepare)
+//
+// Same causal-masked, parameterless-LN, no-PE simplifications as neumoe.ns.
+
+type S     = Dynamic   // flattened token-index vector (sequence length)
+type V     = 10240     // vocabulary size
+type D     = 512       // model dimension
+type H     = 8         // attention heads
+type FF    = 2048      // feed-forward hidden dimension
+type WIDE  = 20484     // wide-FFN hidden (== the MoE-variant full capacity)
+type C     = 10240     // classes (== Vocab; next-token prediction)
+
+network DenseWide {
+    input:  Tensor[S] float32
+    output: Tensor[S, C] float32
+
+    layer emb   = Embedding(vocab_size: V, d_model: D)
+
+    layer b0_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b0_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b0_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b1_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b1_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b1_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b2_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b2_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b2_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b3_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b3_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b3_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b4_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b4_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b4_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b5_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b5_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b5_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b6_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b6_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b6_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer w_attn  = Attention(d_model: D, num_heads: H, causal: true)
+    layer df1     = Dense(in: D, out: WIDE, activation: GELU)
+    layer df2     = Dense(in: WIDE, out: D, activation: Identity)
+
+    layer ln_f    = LayerNorm()
+    layer head    = Dense(in: D, out: C, activation: Identity)
+
+    forward(x) {
+        var h = x -> emb
+
+        var t0a = h -> b0_attn
+        var t0b = h + t0a
+        var t0c = t0b -> b0_f1
+        var t0d = t0c -> b0_f2
+        var t0  = t0b + t0d
+
+        var t1a = t0 -> b1_attn
+        var t1b = t0 + t1a
+        var t1c = t1b -> b1_f1
+        var t1d = t1c -> b1_f2
+        var t1  = t1b + t1d
+
+        var t2a = t1 -> b2_attn
+        var t2b = t1 + t2a
+        var t2c = t2b -> b2_f1
+        var t2d = t2c -> b2_f2
+        var t2  = t2b + t2d
+
+        var t3a = t2 -> b3_attn
+        var t3b = t2 + t3a
+        var t3c = t3b -> b3_f1
+        var t3d = t3c -> b3_f2
+        var t3  = t3b + t3d
+
+        var t4a = t3 -> b4_attn
+        var t4b = t3 + t4a
+        var t4c = t4b -> b4_f1
+        var t4d = t4c -> b4_f2
+        var t4  = t4b + t4d
+
+        var t5a = t4 -> b5_attn
+        var t5b = t4 + t5a
+        var t5c = t5b -> b5_f1
+        var t5d = t5c -> b5_f2
+        var t5  = t5b + t5d
+
+        var t6a = t5 -> b6_attn
+        var t6b = t5 + t6a
+        var t6c = t6b -> b6_f1
+        var t6d = t6c -> b6_f2
+        var t6  = t6b + t6d
+
+        var wa = t6 -> w_attn
+        var wb = t6 + wa
+        var z  = wb -> ln_f
+        var wf1 = z -> df1
+        var wf2 = wf1 -> df2
+        var wout = wb + wf2
+        var logits = wout -> head
+        return logits
+    }
+
+    train(x: Tensor[S], labels: Tensor[S, C]) -> float32 {
+        grad {
+            var h      = x -> emb
+
+            var t0a = h -> b0_attn
+            var t0b = h + t0a
+            var t0c = t0b -> b0_f1
+            var t0d = t0c -> b0_f2
+            var t0  = t0b + t0d
+
+            var t1a = t0 -> b1_attn
+            var t1b = t0 + t1a
+            var t1c = t1b -> b1_f1
+            var t1d = t1c -> b1_f2
+            var t1  = t1b + t1d
+
+            var t2a = t1 -> b2_attn
+            var t2b = t1 + t2a
+            var t2c = t2b -> b2_f1
+            var t2d = t2c -> b2_f2
+            var t2  = t2b + t2d
+
+            var t3a = t2 -> b3_attn
+            var t3b = t2 + t3a
+            var t3c = t3b -> b3_f1
+            var t3d = t3c -> b3_f2
+            var t3  = t3b + t3d
+
+            var t4a = t3 -> b4_attn
+            var t4b = t3 + t4a
+            var t4c = t4b -> b4_f1
+            var t4d = t4c -> b4_f2
+            var t4  = t4b + t4d
+
+            var t5a = t4 -> b5_attn
+            var t5b = t4 + t5a
+            var t5c = t5b -> b5_f1
+            var t5d = t5c -> b5_f2
+            var t5  = t5b + t5d
+
+            var t6a = t5 -> b6_attn
+            var t6b = t5 + t6a
+            var t6c = t6b -> b6_f1
+            var t6d = t6c -> b6_f2
+            var t6  = t6b + t6d
+
+            var wa = t6 -> w_attn
+            var wb = t6 + wa
+            var z  = wb -> ln_f
+            var wf1 = z -> df1
+            var wf2 = wf1 -> df2
+            var wout = wb + wf2
+            var logits = wout -> head
+            var loss   = cross_entropy(logits, labels)
+        }
+        return loss
+    }
+}

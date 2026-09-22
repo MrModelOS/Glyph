@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.1.0] — 2026-09-22
+
+### NeuralScript (nns) merged
+
+- Ported NeuralScript C++ implementation to Rust with byte-identical codegen.
+- Merged into `glyphc` as `glyphc nns` — single binary, no separate toolchain.
+- Backends: `--cpp` and `--cuda` with `--runtime` header emission; `--check` for typecheck-only.
+- Examples: `glyphc nns examples/mlp.ns --cpp --runtime | gcc -x c - -o a.out && ./a.out`, `glyphc nns file.ns --cuda --runtime`, `glyphc nns file.ns --check`.
+
 ## [2.0.0] — 2026-09-10
 
 ### If/else as an expression

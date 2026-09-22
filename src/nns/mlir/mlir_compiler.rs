@@ -433,34 +433,34 @@ impl MLIRCompiler {
                         weight_allocs.push(instr);
                     }
                 } else if meta.type_name == "Embedding" {
-                    let V = meta.vocab_size;
-                    let D = meta.emb_dim;
-                    if V > 0 && D > 0 {
+                    let v = meta.vocab_size;
+                    let d = meta.emb_dim;
+                    if v > 0 && d > 0 {
                         let weight_name = format!("{}_w", layer.layer_name);
                         let mut instr = MLIRInstr::new(MLIROp::TensorAlloc, weight_name.clone());
                         instr.result_type = TensorType::new(
-                            vec![DimExpr::constant(V), DimExpr::constant(D)],
+                            vec![DimExpr::constant(v), DimExpr::constant(d)],
                             Dtype::Float32,
                         );
-                        instr.comment = format!("allocate embedding [{}, {}]", V, D);
+                        instr.comment = format!("allocate embedding [{}, {}]", v, d);
                         self.layer_weight_id
                             .insert(layer.layer_name.clone(), weight_name.clone());
                         meta.weight_ids.push(weight_name);
                         weight_allocs.push(instr);
                     }
                 } else if meta.type_name == "Attention" || meta.type_name == "MultiHeadAttention" {
-                    let D = meta.emb_dim;
-                    let H = meta.num_heads;
-                    if D > 0 && H > 0 && D % H == 0 {
+                    let d = meta.emb_dim;
+                    let h = meta.num_heads;
+                    if d > 0 && h > 0 && d % h == 0 {
                         for suffix in &["_q", "_k", "_v", "_o"] {
                             let weight_name = format!("{}{}_w", layer.layer_name, suffix);
                             let mut instr =
                                 MLIRInstr::new(MLIROp::TensorAlloc, weight_name.clone());
                             instr.result_type = TensorType::new(
-                                vec![DimExpr::constant(D), DimExpr::constant(D)],
+                                vec![DimExpr::constant(d), DimExpr::constant(d)],
                                 Dtype::Float32,
                             );
-                            instr.comment = format!("allocate attention weight [{}, {}]", D, D);
+                            instr.comment = format!("allocate attention weight [{}, {}]", d, d);
                             meta.weight_ids.push(weight_name);
                             weight_allocs.push(instr);
                         }
@@ -469,17 +469,17 @@ impl MLIRCompiler {
             }
 
             if meta.type_name == "MoE" || meta.type_name == "MixtureOfExperts" {
-                let D = meta.emb_dim;
-                let E = meta.num_experts;
-                if D > 0 && E > 0 {
-                    let H = if meta.ffn_dim > 0 {
+                let d = meta.emb_dim;
+                let e = meta.num_experts;
+                if d > 0 && e > 0 {
+                    let h = if meta.ffn_dim > 0 {
                         meta.ffn_dim
                     } else {
-                        4 * D
+                        4 * d
                     };
-                    meta.ffn_dim = H;
-                    if meta.initial_experts <= 0 || meta.initial_experts > E {
-                        meta.initial_experts = E;
+                    meta.ffn_dim = h;
+                    if meta.initial_experts <= 0 || meta.initial_experts > e {
+                        meta.initial_experts = e;
                     }
 
                     let gate_name = format!("{}_g_w", layer.layer_name);
@@ -489,31 +489,31 @@ impl MLIRCompiler {
                     let mut gate =
                         MLIRInstr::new(MLIROp::TensorAlloc, gate_name.clone());
                     gate.result_type = TensorType::new(
-                        vec![DimExpr::constant(D), DimExpr::constant(E)],
+                        vec![DimExpr::constant(d), DimExpr::constant(e)],
                         Dtype::Float32,
                     );
-                    gate.comment = format!("allocate MoE router [{}, {}]", D, E);
+                    gate.comment = format!("allocate MoE router [{}, {}]", d, e);
 
                     let mut e1 =
                         MLIRInstr::new(MLIROp::TensorAlloc, e1_name.clone());
                     e1.result_type = TensorType::new(
-                        vec![DimExpr::constant(E), DimExpr::constant(D * H)],
+                        vec![DimExpr::constant(e), DimExpr::constant(d * h)],
                         Dtype::Float32,
                     );
                     e1.comment = format!(
                         "allocate MoE expert FFN-1 [{}, {} -> {}]",
-                        E, D, H
+                        e, d, h
                     );
 
                     let mut e2 =
                         MLIRInstr::new(MLIROp::TensorAlloc, e2_name.clone());
                     e2.result_type = TensorType::new(
-                        vec![DimExpr::constant(E), DimExpr::constant(H * D)],
+                        vec![DimExpr::constant(e), DimExpr::constant(h * d)],
                         Dtype::Float32,
                     );
                     e2.comment = format!(
                         "allocate MoE expert FFN-2 [{}, {} -> {}]",
-                        E, H, D
+                        e, h, d
                     );
 
                     meta.weight_ids.push(gate_name);
@@ -864,12 +864,12 @@ impl MLIRCompiler {
                         MLIROp::LayerAttention => {
                             if let Some(cit2) = g.get(&orig.result_id).cloned() {
                                 if orig.operands.len() >= 5 {
-                                    let H_str = if orig.attribute.is_empty() {
+                                    let h_str = if orig.attribute.is_empty() {
                                         "1".to_string()
                                     } else {
                                         orig.attribute.clone()
                                     };
-                                    let _D_str = orig.int_attr.to_string();
+                                    let _d_str = orig.int_attr.to_string();
                                     let mut ax = MLIRInstr::new(
                                         MLIROp::AttentionGradX,
                                         self.new_temp("g"),
@@ -882,7 +882,7 @@ impl MLIRCompiler {
                                         orig.operands[3].clone(),
                                         orig.operands[4].clone(),
                                     ];
-                                    ax.attribute = H_str.clone();
+                                    ax.attribute = h_str.clone();
                                     ax.int_attr = orig.int_attr;
                                     ax.ints_attr = orig.ints_attr.clone();
                                     ax.comment = "dx(attention)".to_string();
@@ -901,7 +901,7 @@ impl MLIRCompiler {
                                             self.new_temp("g"),
                                         );
                                         aq.operands = ax.operands.clone();
-                                        aq.attribute = H_str.clone();
+                                        aq.attribute = h_str.clone();
                                         aq.int_attr = orig.int_attr;
                                         aq.ints_attr = orig.ints_attr.clone();
                                         fn_.instructions.push(aq.clone());
@@ -1195,7 +1195,37 @@ impl MLIRCompiler {
                     let instr_id = self.new_temp("ln");
                     let mut instr = MLIRInstr::new(MLIROp::Layernorm, instr_id.clone());
                     instr.operands = vec![input.clone()];
-                    // No explicit result_type needed; the codegen infers it.
+                    // Mirror C++ mlir_compiler.cpp: instr.result_type = in.type
+                    let mut found: Option<TensorType> = None;
+                    for prev in fn_.instructions.iter().rev() {
+                        if prev.result_id == input && !prev.result_type.dims.is_empty() {
+                            found = Some(prev.result_type.clone());
+                            break;
+                        }
+                    }
+                    if let Some(rt) = found {
+                        instr.result_type = rt;
+                    } else {
+                        // Fallback when in.type is empty (e.g. forward param with no
+                        // materialized type). Use Symbolic("T") for byte-identical dump
+                        // (C++ prints S/T, not Dynamic) and try to infer feature width
+                        // from the most recent typed 2-D value so codegen gets 512 not 1.
+                        let mut fallback: Option<TensorType> = None;
+                        for prev in fn_.instructions.iter().rev() {
+                            if prev.result_type.dims.len() >= 2 {
+                                fallback = Some(prev.result_type.clone());
+                                break;
+                            }
+                        }
+                        if let Some(fb) = fallback {
+                            instr.result_type = fb;
+                        } else {
+                            instr.result_type = TensorType::new(
+                                vec![DimExpr::symbolic("T"), DimExpr::dynamic()],
+                                Dtype::Float32,
+                            );
+                        }
+                    }
                     instr.comment = format!("layernorm({})", input);
                     fn_.instructions.push(instr);
                     return instr_id;

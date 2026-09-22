@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! MLIR-like IR types — port of `ns/mlir/mlir_compiler.hpp` IR section.
 //!
 //! A simplified MLIR-style IR that captures the high-level tensor graph.

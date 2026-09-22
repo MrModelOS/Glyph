@@ -1,5 +1,0 @@
-@use a;
-
-@fn main() -> Void {
-    a::a();
-}

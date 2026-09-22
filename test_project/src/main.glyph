@@ -1,5 +1,0 @@
-@module main
-
-@fn main() -> Void {
-    print("Hello from test project!");
-}

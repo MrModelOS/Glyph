@@ -1,7 +1,7 @@
 # Glyph Language Compiler (glyphc)
 
 [![CI](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml/badge.svg)](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/glyphc-v2.0.0-blue)
+![version](https://img.shields.io/badge/glyphc-v2.1.0-blue)
 
 The **Glyph** programming language compiler, written in Rust.
 
@@ -39,6 +39,26 @@ plain native binaries.
   recv/await with `timeout(ms)`/`default` arms
 - Built-in test framework: `@test`, asserts, `glyphc test`
 - `glyphc fmt`: comment-preserving canonical indentation + `--check`/`--write`
+
+## NeuralScript (nns)
+
+NeuralScript (`.ns`) — neural-network DSL, now integrated into `glyphc` as `glyphc nns`.
+The original C++ implementation was ported to Rust with byte-identical codegen and merged
+into the single `glyphc` binary.
+
+```bash
+glyphc nns file.ns --check                          # typecheck only, no codegen
+glyphc nns file.ns --cpp                            # emit C++ to stdout
+glyphc nns file.ns --cpp --runtime                  # emit C++ + runtime header
+glyphc nns examples/mlp.ns --cpp --runtime | gcc -x c - -o a.out && ./a.out
+glyphc nns file.ns --cuda --runtime                 # emit CUDA + runtime header
+glyphc nns file.ns --cuda --runtime -o out.cu       # write to file
+```
+
+Flags: `--check` (no codegen), `--cpp` / `--cuda` (select backend), `--runtime` (prepend
+runtime header), `-o`/`--output <file>` (write to file instead of stdout).
+
+Examples live in `examples/*.ns` (e.g. `examples/mlp.ns`).
 
 ## Install
 

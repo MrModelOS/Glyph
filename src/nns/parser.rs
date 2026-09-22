@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Recursive-descent parser — port of `ns/parser/parser.cpp`.
 
 use super::ast::{

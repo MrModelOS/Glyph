@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Numeric training driver — port of `ns/training/trainer.cpp`.
 //!
 //! Executes the *unfused* MLIR forward graph of a network with a reverse-mode

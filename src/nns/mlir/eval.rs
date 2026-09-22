@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Numeric interpreter over the MLIR module — port of `ns/mlir/eval.cpp`.
 //!
 //! Used by the fusion test to prove that the fused module computes the

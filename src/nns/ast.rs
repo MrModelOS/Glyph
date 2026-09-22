@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! AST types — port of `ns/parser/ast.hpp` + `ast.cpp`.
 
 use super::token::{Token, TokenType};

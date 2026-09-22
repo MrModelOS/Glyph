@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Canonical optimizer hyperparameters — port of `ns/optim/optim_params.hpp`.
 //!
 //! SINGLE source of truth for the generated AOT training cores (CPU and CUDA

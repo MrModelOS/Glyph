@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Token types and the Token struct — port of `ns/lexer/token.hpp` + `token.cpp`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

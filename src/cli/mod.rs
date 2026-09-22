@@ -138,6 +138,10 @@ enum Commands {
         /// Run static shape checking only
         #[arg(long)]
         check: bool,
+
+        /// Enable fp16 (half-precision) codegen
+        #[arg(long)]
+        fp16: bool,
     },
 }
 
@@ -189,8 +193,9 @@ pub fn run() {
             cuda,
             runtime,
             check,
+            fp16,
         } => {
-            run_nns(&input, mlir, cpp, cuda, runtime, check);
+            run_nns(&input, mlir, cpp, cuda, runtime, check, fp16);
         }
     }
 }
@@ -1050,7 +1055,7 @@ fn build_project(profile: &str) {
     println!("Build successful: {}", output_path.display());
 }
 
-fn run_nns(input: &PathBuf, mlir: bool, cpp: bool, cuda: bool, runtime: bool, check: bool) {
+fn run_nns(input: &PathBuf, mlir: bool, cpp: bool, cuda: bool, runtime: bool, check: bool, fp16: bool) {
     // Read source file, mirroring nsc's "Cannot open file: <path>"
     let source = match fs::read_to_string(input) {
         Ok(s) => s,
@@ -1125,6 +1130,7 @@ fn run_nns(input: &PathBuf, mlir: bool, cpp: bool, cuda: bool, runtime: bool, ch
     let mut opts = crate::nns::codegen::codegen::CodegenOptions::default();
     opts.backend = backend;
     opts.emit_runtime_driver = runtime;
+    opts.enable_fp16 = fp16;
 
     let cg = crate::nns::codegen::codegen::CodeGenerator::default();
     match cg.generate(&module, &opts) {

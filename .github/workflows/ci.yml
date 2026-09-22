@@ -32,3 +32,189 @@ jobs:
 
       - name: Release build
         run: cargo build --locked --release
+
+  nns-diff:
+    name: NNS diff harness (glyphc vs nsc)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build glyphc
+        run: cargo build --bin glyphc --locked
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Clone NeuralScript if missing
+        run: |
+          if [ ! -d NeuralScript ]; then
+            echo "NeuralScript dir not found, cloning from https://github.com/MrModelOS/NeuralScript.git"
+            git clone https://github.com/MrModelOS/NeuralScript.git
+          else
+            echo "NeuralScript dir exists"
+          fi
+          echo "--- NeuralScript layout ---"
+          ls -R NeuralScript | head -n 200
+          echo "--- examples ---"
+          ls -lh NeuralScript/examples/*.ns 2>&1 | head -n 50 || echo "no NeuralScript/examples/*.ns"
+          ls -lh examples/nns/*.ns 2>&1 | head -n 50 || echo "no examples/nns/*.ns"
+          ls -lh glyphc/examples/nns/*.ns 2>&1 | head -n 50 || echo "no glyphc/examples/nns/*.ns"
+
+      - name: Build nsc (reference)
+        run: |
+          cmake -S NeuralScript -B NeuralScript/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build NeuralScript/build --target nsc --parallel
+          echo "--- nsc binary ---"
+          ls -lh NeuralScript/build/nsc 2>&1 || ls -lh NeuralScript/build/**/nsc 2>&1 || ls -lh build/nsc 2>&1 || (echo "nsc not found"; find NeuralScript/build -type f -name "nsc" 2>&1)
+          # also keep a copy at build/nsc for spec compatibility (now local build/nsc)
+          mkdir -p build
+          cp -v NeuralScript/build/nsc build/nsc 2>&1 || cp -v $(find NeuralScript/build -type f -name nsc | head -n1) build/nsc 2>&1 || true
+          ls -lh build/nsc 2>&1 || true
+
+      - name: Diff harness --cpp / --cuda / --runtime / --check / --mlir
+        run: |
+          set -euo pipefail
+          NSC="NeuralScript/build/nsc"
+          if [ ! -x "$NSC" ]; then
+            NSC=$(find NeuralScript/build -type f -name nsc | head -n1)
+          fi
+          if [ ! -x "$NSC" ] && [ -x "build/nsc" ]; then
+            NSC="build/nsc"
+          fi
+          GLYPHC="target/debug/glyphc"
+          if [ ! -x "$GLYPHC" ]; then
+            echo "glyphc binary not found at $GLYPHC, trying cargo run fallback"
+            GLYPHC="cargo run --quiet --bin glyphc --"
+          fi
+          echo "NSC=$NSC"
+          echo "GLYPHC=$GLYPHC"
+          ls -lh "$NSC" 2>&1 || true
+          ls -lh "$GLYPHC" 2>&1 || true
+
+          # Resolve example glob: prefer NeuralScript/examples/*.ns, fallback to examples/nns/*.ns
+          shopt -s nullglob
+          EXAMPLES=()
+          for cand in "NeuralScript/examples/*.ns" "examples/nns/*.ns" "glyphc/examples/nns/*.ns"; do
+            # expand cand
+            for f in $cand; do
+              EXAMPLES+=("$f")
+            done
+            if [ ${#EXAMPLES[@]} -gt 0 ]; then
+              echo "Using examples from pattern: $cand"
+              break
+            fi
+          done
+          if [ ${#EXAMPLES[@]} -eq 0 ]; then
+            echo "No .ns examples found for any candidate pattern, checking filesystem:"
+            find . -name "*.ns" 2>&1 | head -n 50
+            echo "ERROR: no .ns examples found — harness cannot run"
+            exit 1
+          fi
+          echo "Found ${#EXAMPLES[@]} examples:"
+          printf '  %s\n' "${EXAMPLES[@]}"
+
+          # Helper to run glyphc nns regardless of binary vs cargo run
+          run_glyphc() {
+            if [[ "$GLYPHC" == cargo* ]]; then
+              $GLYPHC nns "$@"
+            else
+              "$GLYPHC" nns "$@"
+            fi
+          }
+
+          echo "================ --cpp ================"
+          for ex in "${EXAMPLES[@]}"; do
+            echo "--- $ex --cpp ---"
+            "$NSC" "$ex" --cpp > /tmp/nsc.cpp 2> /tmp/nsc.stderr || { echo "nsc --cpp failed for $ex"; cat /tmp/nsc.stderr; exit 1; }
+            run_glyphc "$ex" --cpp > /tmp/glyphc.cpp 2> /tmp/glyphc.stderr || { echo "glyphc --cpp failed for $ex"; cat /tmp/glyphc.stderr; exit 1; }
+            diff -u /tmp/nsc.cpp /tmp/glyphc.cpp || { echo "DIFF MISMATCH --cpp $ex"; exit 1; }
+          done
+
+          echo "================ --cuda ================"
+          for ex in "${EXAMPLES[@]}"; do
+            echo "--- $ex --cuda ---"
+            "$NSC" "$ex" --cuda > /tmp/nsc.cpp 2> /tmp/nsc.stderr || { echo "nsc --cuda failed for $ex"; cat /tmp/nsc.stderr; exit 1; }
+            run_glyphc "$ex" --cuda > /tmp/glyphc.cpp 2> /tmp/glyphc.stderr || { echo "glyphc --cuda failed for $ex"; cat /tmp/glyphc.stderr; exit 1; }
+            diff -u /tmp/nsc.cpp /tmp/glyphc.cpp || { echo "DIFF MISMATCH --cuda $ex"; exit 1; }
+          done
+
+          echo "================ --cpp --runtime ================"
+          for ex in "${EXAMPLES[@]}"; do
+            echo "--- $ex --cpp --runtime ---"
+            "$NSC" "$ex" --cpp --runtime > /tmp/nsc.cpp 2> /tmp/nsc.stderr || { echo "nsc --cpp --runtime failed for $ex"; cat /tmp/nsc.stderr; exit 1; }
+            run_glyphc "$ex" --cpp --runtime > /tmp/glyphc.cpp 2> /tmp/glyphc.stderr || { echo "glyphc --cpp --runtime failed for $ex"; cat /tmp/glyphc.stderr; exit 1; }
+            diff -u /tmp/nsc.cpp /tmp/glyphc.cpp || { echo "DIFF MISMATCH --cpp --runtime $ex"; exit 1; }
+          done
+
+          echo "================ --cuda --runtime ================"
+          for ex in "${EXAMPLES[@]}"; do
+            echo "--- $ex --cuda --runtime ---"
+            "$NSC" "$ex" --cuda --runtime > /tmp/nsc.cpp 2> /tmp/nsc.stderr || { echo "nsc --cuda --runtime failed for $ex"; cat /tmp/nsc.stderr; exit 1; }
+            run_glyphc "$ex" --cuda --runtime > /tmp/glyphc.cpp 2> /tmp/glyphc.stderr || { echo "glyphc --cuda --runtime failed for $ex"; cat /tmp/glyphc.stderr; exit 1; }
+            diff -u /tmp/nsc.cpp /tmp/glyphc.cpp || { echo "DIFF MISMATCH --cuda --runtime $ex"; exit 1; }
+          done
+
+          echo "================ --check ================"
+          for ex in "${EXAMPLES[@]}"; do
+            echo "--- $ex --check ---"
+            set +e
+            "$NSC" "$ex" --check > /tmp/nsc.check.stdout 2> /tmp/nsc.check.stderr
+            NSC_RC=$?
+            run_glyphc "$ex" --check > /tmp/glyphc.check.stdout 2> /tmp/glyphc.check.stderr
+            GLYPHC_RC=$?
+            set -e
+            echo "nsc rc=$NSC_RC glyphc rc=$GLYPHC_RC"
+            if [ "$NSC_RC" -ne "$GLYPHC_RC" ]; then
+              echo "EXIT CODE MISMATCH --check $ex: nsc=$NSC_RC glyphc=$GLYPHC_RC"
+              echo "--- nsc stdout ---"; cat /tmp/nsc.check.stdout
+              echo "--- nsc stderr ---"; cat /tmp/nsc.check.stderr
+              echo "--- glyphc stdout ---"; cat /tmp/glyphc.check.stdout
+              echo "--- glyphc stderr ---"; cat /tmp/glyphc.check.stderr
+              exit 1
+            fi
+            # If failed, both must contain Error: on stderr (or stdout)
+            if [ "$NSC_RC" -ne 0 ]; then
+              if ! grep -q "Error:" /tmp/nsc.check.stderr; then
+                if ! grep -q "Error:" /tmp/nsc.check.stdout; then
+                  echo "nsc --check expected Error: for $ex"
+                  cat /tmp/nsc.check.stderr; cat /tmp/nsc.check.stdout
+                  exit 1
+                fi
+              fi
+              if ! grep -q "Error:" /tmp/glyphc.check.stderr; then
+                if ! grep -q "Error:" /tmp/glyphc.check.stdout; then
+                  echo "glyphc --check expected Error: for $ex"
+                  cat /tmp/glyphc.check.stderr; cat /tmp/glyphc.check.stdout
+                  exit 1
+                fi
+              fi
+              # Diff error messages normalized (optional strict diff)
+              # We compare sorted stderr lines containing Error:
+              echo "both failed as expected (Error: present)"
+            else
+              diff -u /tmp/nsc.check.stdout /tmp/glyphc.check.stdout || { echo "DIFF MISMATCH --check stdout $ex"; exit 1; }
+              diff -u /tmp/nsc.check.stderr /tmp/glyphc.check.stderr || { echo "DIFF MISMATCH --check stderr $ex"; exit 1; }
+            fi
+          done
+
+          echo "================ --mlir ================"
+          for ex in "${EXAMPLES[@]}"; do
+            echo "--- $ex --mlir ---"
+            "$NSC" "$ex" --mlir > /tmp/nsc.mlir 2> /tmp/nsc.stderr || { echo "nsc --mlir failed for $ex"; cat /tmp/nsc.stderr; exit 1; }
+            run_glyphc "$ex" --mlir > /tmp/glyphc.mlir 2> /tmp/glyphc.stderr || { echo "glyphc --mlir failed for $ex"; cat /tmp/glyphc.stderr; exit 1; }
+            diff -u /tmp/nsc.mlir /tmp/glyphc.mlir || { echo "DIFF MISMATCH --mlir $ex"; exit 1; }
+          done
+
+          echo "All NNS diff harness checks passed."
+
+      - name: Upload nsc artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nsc-reference
+          path: NeuralScript/build/nsc
+          if-no-files-found: warn

@@ -1,0 +1,210 @@
+// NeuralScript NeuMoE reference model for the MX450 parameter-vs-loss study.
+//
+// Mirrors neu_moe/model.py::NeuMoE at the macro level:
+//   Embedding (no positional embedding; causal attention makes the head
+//   position-aware) -> 7 x TransformerBlock -> MoE block (attn + base FFN
+//   in parallel with an FFN-MoE of k_max expert slots) -> LN_f -> head.
+//
+// v1.3 constraints honored:
+//   * one MoE layer per model (capacity 9, initial live count 1).
+//   * "birth by schedule" lifecycle: ns_expert_birth() from the host driver
+//     grows 1 -> 9 (real router/entropy-driven spawns are not observable by
+//     the host ABI, so the growth policy is a fixed schedule).
+//   * base_ffn = bf1(512->2048 GELU) + bf2(2048->512 Identity); the NS MoE
+//     layer holds the gate + per-expert FFN only. bf1/bf2 are plain Dense
+//     layers sharing the same input z as the MoE (reverse mode accumulates
+//     gradients through the elementwise "+").
+//   * the v1.3 Attention scale is D^-0.5 (not hd^-0.5 like the torch ref);
+//     the small task-per-step batch (B=1) bounds attention-scratch memory.
+//
+// Weight blob (concatenated, in this order):
+//   emb [V*D]
+//   b0..b6: headline attn 4*[D*D] + f1 [D*FF] + f2 [FF*D]
+//   m_attn 4*[D*D] | moe_g_w [D*E] | moe_e1_w [E*D*FF] | moe_e2_w [E*FF*D]
+//   bf1 [D*FF] | bf2 [FF*D]
+//   head [D*V]
+//
+//   budget: blocks = 7 * (4*D*D + 2*D*FF) = 7 * 3,145,728 = 22,020,096
+//           attn8 = 4*D*D = 1,048,576        bf  = 2*D*FF  = 2,097,152
+//           moe_g = D*E = 4,608              moe_e= E*2*D*FF = 37,748,736
+//           emb + head = 2*V*D = 10,485,760
+//           TOTAL = 73,404,928 floats (compile-time, all E=9 slots)
+//           active @ K=1 = TOTAL - (9-1)*moe_e/9 = 37,836,800 floats
+//           active @ K=9 = TOTAL
+//
+//   (LayerNorm params and the positional embedding from the torch reference
+//    are omitted: NS LayerNorm() is parameterless and there is no PE layer.)
+
+type S     = Dynamic   // flattened token-index vector (sequence length)
+type V     = 10240     // vocabulary size (PAD/BOS/EOS/UNK/QMARK/AMARK + 3 domains)
+type D     = 512       // model dimension
+type H     = 8         // attention heads
+type FF    = 2048      // feed-forward hidden dimension
+type E     = 9         // MoE capacity (compile-time slots)
+type C     = 10240     // classes (== Vocab; next-token prediction)
+
+network NeuMoE {
+    input:  Tensor[S] float32
+    output: Tensor[S, C] float32
+
+    layer emb   = Embedding(vocab_size: V, d_model: D)
+
+    layer b0_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b0_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b0_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b1_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b1_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b1_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b2_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b2_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b2_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b3_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b3_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b3_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b4_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b4_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b4_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b5_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b5_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b5_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer b6_attn = Attention(d_model: D, num_heads: H, causal: true)
+    layer b6_f1   = Dense(in: D, out: FF, activation: GELU)
+    layer b6_f2   = Dense(in: FF, out: D, activation: Identity)
+
+    layer m_attn  = Attention(d_model: D, num_heads: H, causal: true)
+    layer moe     = MoE(d_model: D, num_experts: E, initial_experts: 1, ffn_dim: FF)
+    layer bf1     = Dense(in: D, out: FF, activation: GELU)
+    layer bf2     = Dense(in: FF, out: D, activation: Identity)
+
+    layer ln_f    = LayerNorm()
+    layer head    = Dense(in: D, out: C, activation: Identity)
+
+    forward(x) {
+        var h = x -> emb
+
+        var t0a = h -> b0_attn
+        var t0b = h + t0a
+        var t0c = t0b -> b0_f1
+        var t0d = t0c -> b0_f2
+        var t0  = t0b + t0d
+
+        var t1a = t0 -> b1_attn
+        var t1b = t0 + t1a
+        var t1c = t1b -> b1_f1
+        var t1d = t1c -> b1_f2
+        var t1  = t1b + t1d
+
+        var t2a = t1 -> b2_attn
+        var t2b = t1 + t2a
+        var t2c = t2b -> b2_f1
+        var t2d = t2c -> b2_f2
+        var t2  = t2b + t2d
+
+        var t3a = t2 -> b3_attn
+        var t3b = t2 + t3a
+        var t3c = t3b -> b3_f1
+        var t3d = t3c -> b3_f2
+        var t3  = t3b + t3d
+
+        var t4a = t3 -> b4_attn
+        var t4b = t3 + t4a
+        var t4c = t4b -> b4_f1
+        var t4d = t4c -> b4_f2
+        var t4  = t4b + t4d
+
+        var t5a = t4 -> b5_attn
+        var t5b = t4 + t5a
+        var t5c = t5b -> b5_f1
+        var t5d = t5c -> b5_f2
+        var t5  = t5b + t5d
+
+        var t6a = t5 -> b6_attn
+        var t6b = t5 + t6a
+        var t6c = t6b -> b6_f1
+        var t6d = t6c -> b6_f2
+        var t6  = t6b + t6d
+
+        var pa = t6 -> m_attn
+        var pb = t6 + pa
+        var z  = pb -> ln_f
+        var base  = z -> bf1
+        var base2 = base -> bf2
+        var moe_o = z -> moe
+        var y     = base2 + moe_o
+        var pb_out = pb + y
+        var logits = pb_out -> head
+        return logits
+    }
+
+    train(x: Tensor[S], labels: Tensor[S, C]) -> float32 {
+        grad {
+            var h      = x -> emb
+
+            var t0a = h -> b0_attn
+            var t0b = h + t0a
+            var t0c = t0b -> b0_f1
+            var t0d = t0c -> b0_f2
+            var t0  = t0b + t0d
+
+            var t1a = t0 -> b1_attn
+            var t1b = t0 + t1a
+            var t1c = t1b -> b1_f1
+            var t1d = t1c -> b1_f2
+            var t1  = t1b + t1d
+
+            var t2a = t1 -> b2_attn
+            var t2b = t1 + t2a
+            var t2c = t2b -> b2_f1
+            var t2d = t2c -> b2_f2
+            var t2  = t2b + t2d
+
+            var t3a = t2 -> b3_attn
+            var t3b = t2 + t3a
+            var t3c = t3b -> b3_f1
+            var t3d = t3c -> b3_f2
+            var t3  = t3b + t3d
+
+            var t4a = t3 -> b4_attn
+            var t4b = t3 + t4a
+            var t4c = t4b -> b4_f1
+            var t4d = t4c -> b4_f2
+            var t4  = t4b + t4d
+
+            var t5a = t4 -> b5_attn
+            var t5b = t4 + t5a
+            var t5c = t5b -> b5_f1
+            var t5d = t5c -> b5_f2
+            var t5  = t5b + t5d
+
+            var t6a = t5 -> b6_attn
+            var t6b = t5 + t6a
+            var t6c = t6b -> b6_f1
+            var t6d = t6c -> b6_f2
+            var t6  = t6b + t6d
+
+            var pa = t6 -> m_attn
+            var pb = t6 + pa
+            var z  = pb -> ln_f
+            var base  = z -> bf1
+            var base2 = base -> bf2
+            var moe_o = z -> moe
+            var y     = base2 + moe_o
+            var pb_out = pb + y
+            var logits = pb_out -> head
+            var loss   = cross_entropy(logits, labels)
+        }
+        return loss
+    }
+}
+
+// Host lifecycle (run.sh / host.cpp):
+//   ns_runtime_init(w, nw);              K = ns_expert_count(m) == 1
+//   for step: ns_runtime_train_step(m, src, tgt_onehot, S-1, &loss, lr)
+//             every 50 steps: ns_expert_birth(m, 1) until K == 9
+//   eval: ns_objective_loss / ns_eval_infer per domain.

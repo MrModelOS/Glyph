@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Exact text of the NNS C-ABI runtime header, embedded so glyphc can
 //! (re)emit `ns_runtime.h` next to generated model sources.
 //!

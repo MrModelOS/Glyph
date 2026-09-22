@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Muon + AdamW optimizer reference — port of `ns/optim/muon.cpp`.
 //!
 //! Muon: for 2D weight matrices, run SGD-style momentum on the gradient, then
