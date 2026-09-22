@@ -113,6 +113,32 @@ enum Commands {
         #[arg(long)]
         write: bool,
     },
+
+    /// NeuralScript tensor compiler (port of nsc)
+    Nns {
+        /// Input .ns file
+        input: PathBuf,
+
+        /// Dump MLIR intermediate representation
+        #[arg(long)]
+        mlir: bool,
+
+        /// Generate CPU C++ reference backend
+        #[arg(long)]
+        cpp: bool,
+
+        /// Generate CUDA backend (default)
+        #[arg(long)]
+        cuda: bool,
+
+        /// Append the C-ABI runtime driver (ns_* host API)
+        #[arg(long)]
+        runtime: bool,
+
+        /// Run static shape checking only
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 pub fn run() {
@@ -155,6 +181,16 @@ pub fn run() {
         }
         Commands::Fmt { input, check, write } => {
             fmt_file(&input, check, write);
+        }
+        Commands::Nns {
+            input,
+            mlir,
+            cpp,
+            cuda,
+            runtime,
+            check,
+        } => {
+            run_nns(&input, mlir, cpp, cuda, runtime, check);
         }
     }
 }
@@ -1013,3 +1049,92 @@ fn build_project(profile: &str) {
 
     println!("Build successful: {}", output_path.display());
 }
+
+fn run_nns(input: &PathBuf, mlir: bool, cpp: bool, cuda: bool, runtime: bool, check: bool) {
+    // Read source file, mirroring nsc's "Cannot open file: <path>"
+    let source = match fs::read_to_string(input) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("Error: Cannot open file: {}", input.display());
+            process::exit(1);
+        }
+    };
+
+    // Stage 1: Lex
+    let mut lexer = crate::nns::lexer::Lexer::new(&source);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
+    };
+
+    // Stage 2: Parse
+    let mut parser = crate::nns::parser::Parser::new(tokens);
+    let mut program = match parser.parse_program() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
+    };
+
+    // Stage 3: Type + shape checking
+    let mut checker = crate::nns::shape_checker::ShapeChecker::new();
+    if !checker.check(&mut program) {
+        for e in checker.errors() {
+            eprintln!("Error: {}", e.message);
+        }
+        if checker.errors().is_empty() {
+            eprintln!("Error: shape checking failed");
+        }
+        process::exit(1);
+    }
+
+    if check {
+        println!("Shape checking passed.");
+        return;
+    }
+
+    // Stage 4: MLIR lowering
+    let mut mlir_compiler = crate::nns::mlir::mlir_compiler::MLIRCompiler::new();
+    let mut module = mlir_compiler.compile(&mut program);
+
+    if mlir {
+        let dump = crate::nns::mlir::mlir_compiler::MLIRCompiler::dump(&module);
+        print!("{}", dump);
+        return;
+    }
+
+    // Stage 4b: kernel fusion pass (matmul + activation/layernorm/bias).
+    let mut fuse = crate::nns::mlir::fusion::FusionPass::new();
+    let nfused = fuse.run(&mut module);
+    eprintln!("Fusion: {} groups fused", nfused);
+
+    // Stage 5: Codegen
+    let backend = if cpp && !cuda {
+        crate::nns::codegen::codegen::TargetBackend::CpuCxx
+    } else if cuda {
+        crate::nns::codegen::codegen::TargetBackend::Cuda
+    } else if cpp {
+        crate::nns::codegen::codegen::TargetBackend::CpuCxx
+    } else {
+        crate::nns::codegen::codegen::TargetBackend::Cuda
+    };
+    let mut opts = crate::nns::codegen::codegen::CodegenOptions::default();
+    opts.backend = backend;
+    opts.emit_runtime_driver = runtime;
+
+    let cg = crate::nns::codegen::codegen::CodeGenerator::default();
+    match cg.generate(&module, &opts) {
+        Ok(code) => {
+            print!("{}", code);
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
