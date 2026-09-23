@@ -46,7 +46,7 @@ jobs:
         run: cargo build --locked --release
 
       - name: Upload glyphc binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: glyphc-bin
           path: target/debug/glyphc
