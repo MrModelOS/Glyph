@@ -50,7 +50,10 @@ pub fn substitute_type(subst: &HashMap<String, Type>, ty: &Type) -> Type {
     }
 }
 
-pub fn substitute_params(subst: &HashMap<String, Type>, params: &[FunctionParam]) -> Vec<FunctionParam> {
+pub fn substitute_params(
+    subst: &HashMap<String, Type>,
+    params: &[FunctionParam],
+) -> Vec<FunctionParam> {
     params
         .iter()
         .map(|p| FunctionParam {
@@ -79,11 +82,7 @@ pub fn substitute_stmt(subst: &HashMap<String, Type>, stmt: &Stmt) -> Stmt {
             value: substitute_expr(subst, value),
             mutable: *mutable,
         },
-        Stmt::Assignment {
-            loc,
-            target,
-            value,
-        } => Stmt::Assignment {
+        Stmt::Assignment { loc, target, value } => Stmt::Assignment {
             loc: *loc,
             target: substitute_expr(subst, target),
             value: substitute_expr(subst, value),
@@ -93,9 +92,10 @@ pub fn substitute_stmt(subst: &HashMap<String, Type>, stmt: &Stmt) -> Stmt {
         Stmt::Return(loc, None) => Stmt::Return(*loc, None),
         Stmt::Break(loc) => Stmt::Break(*loc),
         Stmt::Continue(loc) => Stmt::Continue(*loc),
-        Stmt::Loop(loc, body) => {
-            Stmt::Loop(*loc, body.iter().map(|s| substitute_stmt(subst, s)).collect())
-        }
+        Stmt::Loop(loc, body) => Stmt::Loop(
+            *loc,
+            body.iter().map(|s| substitute_stmt(subst, s)).collect(),
+        ),
         Stmt::While {
             loc,
             condition,
@@ -125,7 +125,10 @@ pub fn substitute_stmt(subst: &HashMap<String, Type>, stmt: &Stmt) -> Stmt {
         } => Stmt::Guard {
             loc: *loc,
             condition: substitute_expr(subst, condition),
-            else_body: else_body.iter().map(|s| substitute_stmt(subst, s)).collect(),
+            else_body: else_body
+                .iter()
+                .map(|s| substitute_stmt(subst, s))
+                .collect(),
         },
         Stmt::Spawn(loc, e) => Stmt::Spawn(*loc, substitute_expr(subst, e)),
         Stmt::Select { loc, arms } => Stmt::Select {
@@ -163,7 +166,9 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
         Expr::StringLiteral(s, sp) => Expr::StringLiteral(s.clone(), *sp),
         Expr::BoolLiteral(b, sp) => Expr::BoolLiteral(*b, *sp),
         Expr::Identifier(n, sp) => Expr::Identifier(n.clone(), *sp),
-        Expr::BinaryOp { op, left, right, .. } => Expr::BinaryOp {
+        Expr::BinaryOp {
+            op, left, right, ..
+        } => Expr::BinaryOp {
             span: expr.span(),
             op: op.clone(),
             left: Box::new(substitute_expr(subst, left)),
@@ -175,7 +180,11 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
             expr: Box::new(substitute_expr(subst, e)),
         },
         Expr::Ref(e, sp) => Expr::Ref(Box::new(substitute_expr(subst, e)), *sp),
-        Expr::Cast { expr: e, target_type, .. } => Expr::Cast {
+        Expr::Cast {
+            expr: e,
+            target_type,
+            ..
+        } => Expr::Cast {
             span: expr.span(),
             expr: Box::new(substitute_expr(subst, e)),
             target_type: substitute_type(subst, target_type),
@@ -250,7 +259,10 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
                 .as_ref()
                 .map(|e| Box::new(substitute_expr(subst, e))),
         },
-        Expr::Block(stmts, sp) => Expr::Block(stmts.iter().map(|s| substitute_stmt(subst, s)).collect(), *sp),
+        Expr::Block(stmts, sp) => Expr::Block(
+            stmts.iter().map(|s| substitute_stmt(subst, s)).collect(),
+            *sp,
+        ),
         Expr::Range {
             start,
             end,
@@ -263,20 +275,21 @@ pub fn substitute_expr(subst: &HashMap<String, Type>, expr: &Expr) -> Expr {
             inclusive: *inclusive,
         },
         Expr::ArrayLiteral(elems, sp) => Expr::ArrayLiteral(
-            elems.iter().map(|e| substitute_expr(subst, e)).collect(), *sp,
+            elems.iter().map(|e| substitute_expr(subst, e)).collect(),
+            *sp,
         ),
         Expr::MapLiteral(pairs, sp) => Expr::MapLiteral(
             pairs
                 .iter()
-                .map(|(k, v)| {
-                    (
-                        substitute_expr(subst, k),
-                        substitute_expr(subst, v),
-                    )
-                })
-                .collect(), *sp,
+                .map(|(k, v)| (substitute_expr(subst, k), substitute_expr(subst, v)))
+                .collect(),
+            *sp,
         ),
-        Expr::ChannelBounded { elem_type, capacity, .. } => Expr::ChannelBounded {
+        Expr::ChannelBounded {
+            elem_type,
+            capacity,
+            ..
+        } => Expr::ChannelBounded {
             span: expr.span(),
             elem_type: Box::new(substitute_type(subst, elem_type)),
             capacity: Box::new(substitute_expr(subst, capacity)),
@@ -407,7 +420,11 @@ pub fn mangle_type(ty: &Type) -> String {
 }
 
 /// Stable C name of a generic function instantiated with the given substitution.
-pub fn instance_c_name(fn_name: &str, type_params: &[String], subst: &HashMap<String, Type>) -> String {
+pub fn instance_c_name(
+    fn_name: &str,
+    type_params: &[String],
+    subst: &HashMap<String, Type>,
+) -> String {
     let m = type_params
         .iter()
         .map(|p| subst.get(p).map(mangle_type).unwrap_or_default())

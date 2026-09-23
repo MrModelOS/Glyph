@@ -4,35 +4,111 @@ on:
   push:
     tags: ['v*']
 
+permissions:
+  contents: write
+  attestations: write
+
 jobs:
   build:
-    name: Build binary (${{ matrix.os }})
+    name: Build binary (${{ matrix.os }}-${{ matrix.arch }})
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+          - os: macos-latest
+            platform: macos
+            arch: arm64
+          - os: windows-latest
+            platform: windows
+            arch: x86_64
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify release source
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --locked
+
       - name: Build release binary
         run: cargo build --locked --release
 
-      - name: Rename binary for the release
+      - name: Package release archive
         shell: bash
         run: |
+          set -euo pipefail
+          # Derive version from tag or Cargo.toml fallback 2.1.0
+          VERSION="${GITHUB_REF_NAME:-}"
+          VERSION="${VERSION#v}"
+          if [ -z "$VERSION" ] || [[ "$VERSION" == *"/"* ]]; then
+            VERSION=$(grep '^version' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          fi
+          if [ -z "$VERSION" ]; then VERSION="2.1.0"; fi
+          echo "Version: $VERSION"
+          OS="${{ matrix.platform }}"
+          ARCH="${{ matrix.arch }}"
+          TARBALL="glyphc-v${VERSION}-${OS}-${ARCH}.tar.gz"
+          echo "Tarball: $TARBALL"
           mkdir -p dist
-          cp target/release/glyphc dist/glyphc-${{ matrix.os }}
-          chmod +x dist/glyphc-${{ matrix.os }}
+
+          # Determine binary path (windows has .exe)
+          BIN_SRC="target/release/glyphc"
+          if [ -f "target/release/glyphc.exe" ]; then
+            BIN_SRC="target/release/glyphc.exe"
+          fi
+          if [ ! -f "$BIN_SRC" ]; then
+            echo "ERROR: binary not found at $BIN_SRC"
+            ls -lh target/release/ || true
+            exit 1
+          fi
+          ls -lh "$BIN_SRC"
+
+          # Stage files for archive
+          STAGE=$(mktemp -d)
+          if [[ "$BIN_SRC" == *.exe ]]; then
+            cp "$BIN_SRC" "$STAGE/glyphc.exe"
+            chmod +x "$STAGE/glyphc.exe" || true
+          else
+            cp "$BIN_SRC" "$STAGE/glyphc"
+            chmod +x "$STAGE/glyphc" || true
+          fi
+          # Include LICENSE and README if present
+          if [ -f "LICENSE" ]; then cp LICENSE "$STAGE/LICENSE"; fi
+          if [ -f "README.md" ]; then cp README.md "$STAGE/README.md"; fi
+          if [ -f "glyphc/LICENSE" ]; then cp glyphc/LICENSE "$STAGE/LICENSE" 2>/dev/null || true; fi
+          if [ -f "glyphc/README.md" ]; then cp glyphc/README.md "$STAGE/README.md" 2>/dev/null || true; fi
+
+          tar -czf "dist/${TARBALL}" -C "$STAGE" .
+
+          echo "Created dist/${TARBALL}"
+          ls -lh dist/
+
+          # Generate checksums on Linux, macOS, and Windows Git Bash.
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum *.tar.gz > sha256sums.txt)
+          else
+            (cd dist && shasum -a 256 *.tar.gz > sha256sums.txt)
+          fi
+          cat dist/sha256sums.txt
+          ls -lh dist/sha256sums.txt
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/glyphc-*
+            dist/*.tar.gz
+            dist/sha256sums.txt
+            LICENSE
             README.md
-            CHANGELOG.md

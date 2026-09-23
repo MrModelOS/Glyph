@@ -20,6 +20,12 @@ struct Document {
     program: Option<Program>,
 }
 
+impl Default for LspServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LspServer {
     pub fn new() -> Self {
         LspServer {
@@ -71,8 +77,14 @@ impl LspServer {
             let responses = self.handle_message(&msg);
             for resp in responses {
                 let bytes = resp.as_bytes();
-                write!(writer, "Content-Length: {}\r\n\r\n{}", bytes.len(), resp).unwrap();
-                writer.flush().unwrap();
+                if write!(writer, "Content-Length: {}\r\n\r\n{}", bytes.len(), resp).is_err()
+                    || writer.flush().is_err()
+                {
+                    // The client may close stdout (for example, a broken pipe).
+                    // Stop the server cleanly instead of panicking.
+                    self.running = false;
+                    return;
+                }
             }
         }
     }
@@ -82,36 +94,32 @@ impl LspServer {
         let id = msg.get("id").cloned();
 
         match method {
-            "initialize" => vec![
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": id.unwrap_or(Value::Null),
-                    "result": {
-                        "capabilities": {
-                            "textDocumentSync": 1,
-                            "completionProvider": {
-                                "triggerCharacters": ["@", "#", ".", ":"]
-                            },
-                            "hoverProvider": true,
-                            "definitionProvider": true,
-                            "diagnosticProvider": {
-                                "interFileDependencies": false,
-                                "workspaceDiagnostics": false
-                            }
+            "initialize" => vec![json!({
+                "jsonrpc": "2.0",
+                "id": id.unwrap_or(Value::Null),
+                "result": {
+                    "capabilities": {
+                        "textDocumentSync": 1,
+                        "completionProvider": {
+                            "triggerCharacters": ["@", "#", ".", ":"]
+                        },
+                        "hoverProvider": true,
+                        "definitionProvider": true,
+                        "diagnosticProvider": {
+                            "interFileDependencies": false,
+                            "workspaceDiagnostics": false
                         }
                     }
-                })
-                .to_string(),
-            ],
+                }
+            })
+            .to_string()],
             "initialized" => Vec::new(),
-            "shutdown" => vec![
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": id.unwrap_or(Value::Null),
-                    "result": null
-                })
-                .to_string(),
-            ],
+            "shutdown" => vec![json!({
+                "jsonrpc": "2.0",
+                "id": id.unwrap_or(Value::Null),
+                "result": null
+            })
+            .to_string()],
             "exit" => {
                 self.running = false;
                 Vec::new()
@@ -124,29 +132,25 @@ impl LspServer {
                 self.upsert_document(msg);
                 self.publish_diagnostics(msg)
             }
-            "textDocument/completion" => vec![
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": id.unwrap_or(Value::Null),
-                    "result": self.handle_completion()
-                })
-                .to_string(),
-            ],
+            "textDocument/completion" => vec![json!({
+                "jsonrpc": "2.0",
+                "id": id.unwrap_or(Value::Null),
+                "result": self.handle_completion()
+            })
+            .to_string()],
             "textDocument/hover" => self.handle_hover(msg),
             "textDocument/definition" => self.handle_definition(msg),
             "textDocument/diagnostic" => {
                 let items = self.collect_diagnostics(msg);
-                vec![
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": id.unwrap_or(Value::Null),
-                        "result": {
-                            "kind": "full",
-                            "items": items
-                        }
-                    })
-                    .to_string(),
-                ]
+                vec![json!({
+                    "jsonrpc": "2.0",
+                    "id": id.unwrap_or(Value::Null),
+                    "result": {
+                        "kind": "full",
+                        "items": items
+                    }
+                })
+                .to_string()]
             }
             _ => Vec::new(),
         }
@@ -154,26 +158,40 @@ impl LspServer {
 
     /// Store the document content from a didOpen/didChange notification.
     fn upsert_document(&mut self, msg: &Value) {
-        let Some(uri) = msg.pointer("/params/textDocument/uri").and_then(|u| u.as_str()) else {
+        let Some(uri) = msg
+            .pointer("/params/textDocument/uri")
+            .and_then(|u| u.as_str())
+        else {
             return;
         };
         let content = msg
             .pointer("/params/contentChanges/0/text")
             .and_then(|c| c.as_str())
-            .or_else(|| msg.pointer("/params/textDocument/text").and_then(|t| t.as_str()))
+            .or_else(|| {
+                msg.pointer("/params/textDocument/text")
+                    .and_then(|t| t.as_str())
+            })
             .unwrap_or("");
         let program = Lexer::new(content)
             .tokenize()
             .ok()
             .and_then(|tokens| Parser::new(tokens).parse_program().ok());
-        self.documents
-            .insert(uri.to_string(), Document { content: content.to_string(), program });
+        self.documents.insert(
+            uri.to_string(),
+            Document {
+                content: content.to_string(),
+                program,
+            },
+        );
     }
 
     /// Compute diagnostics for every open document.
     fn collect_diagnostics(&mut self, msg: &Value) -> Vec<Value> {
         let mut items = Vec::new();
-        let Some(uri) = msg.pointer("/params/textDocument/uri").and_then(|u| u.as_str()) else {
+        let Some(uri) = msg
+            .pointer("/params/textDocument/uri")
+            .and_then(|u| u.as_str())
+        else {
             return items;
         };
         if let Some(doc) = self.documents.get(uri) {
@@ -185,31 +203,38 @@ impl LspServer {
     }
 
     fn publish_diagnostics(&mut self, msg: &Value) -> Vec<String> {
-        let Some(uri) = msg.pointer("/params/textDocument/uri").and_then(|u| u.as_str()) else {
+        let Some(uri) = msg
+            .pointer("/params/textDocument/uri")
+            .and_then(|u| u.as_str())
+        else {
             return Vec::new();
         };
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
         let items: Vec<Value> = analyze(&doc.content);
-        vec![
-            json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/publishDiagnostics",
-                "params": {
-                    "uri": uri,
-                    "diagnostics": items
-                }
-            })
-            .to_string(),
-        ]
+        vec![json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "diagnostics": items
+            }
+        })
+        .to_string()]
     }
 
     fn handle_definition(&mut self, msg: &Value) -> Vec<String> {
-        let Some(uri) = msg.pointer("/params/textDocument/uri").and_then(|u| u.as_str()) else {
+        let Some(uri) = msg
+            .pointer("/params/textDocument/uri")
+            .and_then(|u| u.as_str())
+        else {
             return Vec::new();
         };
-        let line = msg.pointer("/params/position/line").and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+        let line = msg
+            .pointer("/params/position/line")
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0) as usize;
         let character = msg
             .pointer("/params/position/character")
             .and_then(|c| c.as_u64())
@@ -224,25 +249,23 @@ impl LspServer {
             return Vec::new();
         };
 
-        vec![
-            json!({
-                "jsonrpc": "2.0",
-                "id": msg.get("id").cloned().unwrap_or(Value::Null),
-                "result": {
-                    "uri": uri,
-                    "range": range_from(span.start, span.end)
-                }
-            })
-            .to_string(),
-        ]
+        vec![json!({
+            "jsonrpc": "2.0",
+            "id": msg.get("id").cloned().unwrap_or(Value::Null),
+            "result": {
+                "uri": uri,
+                "range": range_from(span.start, span.end)
+            }
+        })
+        .to_string()]
     }
 
     fn handle_completion(&self) -> Value {
         let keywords = [
-            "@module", "@use", "@fn", "@async", "@struct", "@enum", "@trait", "@impl",
-            "@const", "@pub", "@test", "let", "mut", "if", "else", "match", "loop", "while",
-            "for", "in", "return", "break", "continue", "spawn", "await", "select", "timeout",
-            "default", "as", "true", "false", "#guard", "#inject",
+            "@module", "@use", "@fn", "@async", "@struct", "@enum", "@trait", "@impl", "@const",
+            "@pub", "@test", "let", "mut", "if", "else", "match", "loop", "while", "for", "in",
+            "return", "break", "continue", "spawn", "await", "select", "timeout", "default", "as",
+            "true", "false", "#guard", "#inject",
         ];
         let completions: Vec<Value> = keywords
             .iter()
@@ -252,10 +275,16 @@ impl LspServer {
     }
 
     fn handle_hover(&mut self, msg: &Value) -> Vec<String> {
-        let Some(uri) = msg.pointer("/params/textDocument/uri").and_then(|u| u.as_str()) else {
+        let Some(uri) = msg
+            .pointer("/params/textDocument/uri")
+            .and_then(|u| u.as_str())
+        else {
             return Vec::new();
         };
-        let line = msg.pointer("/params/position/line").and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+        let line = msg
+            .pointer("/params/position/line")
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0) as usize;
         let character = msg
             .pointer("/params/position/character")
             .and_then(|c| c.as_u64())
@@ -267,19 +296,17 @@ impl LspServer {
             return Vec::new();
         };
         let value = hover_text(&word);
-        vec![
-            json!({
-                "jsonrpc": "2.0",
-                "id": msg.get("id").cloned().unwrap_or(Value::Null),
-                "result": {
-                    "contents": {
-                        "kind": "markdown",
-                        "value": value
-                    }
+        vec![json!({
+            "jsonrpc": "2.0",
+            "id": msg.get("id").cloned().unwrap_or(Value::Null),
+            "result": {
+                "contents": {
+                    "kind": "markdown",
+                    "value": value
                 }
-            })
-            .to_string(),
-        ]
+            }
+        })
+        .to_string()]
     }
 }
 
@@ -349,7 +376,10 @@ fn diagnostic(range: Value, message: String) -> Value {
 fn type_error_range(e: &TypeError) -> (LineCol, LineCol) {
     match e {
         TypeError::InFunction { source, .. } => type_error_range(source),
-        TypeError::AtSpan { span: Span { start, end }, .. } => (*start, *end),
+        TypeError::AtSpan {
+            span: Span { start, end },
+            ..
+        } => (*start, *end),
         TypeError::AtLine { loc, .. } => (*loc, *loc),
         _ => (LineCol { line: 1, col: 1 }, LineCol { line: 1, col: 1 }),
     }
@@ -358,7 +388,9 @@ fn type_error_range(e: &TypeError) -> (LineCol, LineCol) {
 fn type_error_message(e: &TypeError) -> String {
     match e {
         TypeError::InFunction { source, .. } => type_error_message(source),
-        TypeError::AtSpan { source, .. } | TypeError::AtLine { source, .. } => type_error_message(source),
+        TypeError::AtSpan { source, .. } | TypeError::AtLine { source, .. } => {
+            type_error_message(source)
+        }
         other => format!("{}", other),
     }
 }
@@ -367,7 +399,10 @@ fn parse_error_info(e: &ParseError) -> (String, LineCol) {
     match e {
         ParseError::UnexpectedToken(tok, line, col, expected) => (
             format!("Unexpected token {:?}: expected {}", tok, expected),
-            LineCol { line: *line, col: *col },
+            LineCol {
+                line: *line,
+                col: *col,
+            },
         ),
         ParseError::LexerError(inner) => lexer_error_info(inner),
     }
@@ -377,15 +412,24 @@ fn lexer_error_info(e: &LexerError) -> (String, LineCol) {
     match e {
         LexerError::UnexpectedChar(ch, line, col) => (
             format!("Unexpected character '{}'", ch),
-            LineCol { line: *line, col: *col },
+            LineCol {
+                line: *line,
+                col: *col,
+            },
         ),
         LexerError::UnterminatedString(line, col) => (
             "Unterminated string".to_string(),
-            LineCol { line: *line, col: *col },
+            LineCol {
+                line: *line,
+                col: *col,
+            },
         ),
         LexerError::InvalidNumber(line, col) => (
             "Invalid number".to_string(),
-            LineCol { line: *line, col: *col },
+            LineCol {
+                line: *line,
+                col: *col,
+            },
         ),
     }
 }
@@ -439,18 +483,37 @@ fn lc_gt(a: &LineCol, b: &LineCol) -> bool {
 
 fn push_stmt_defs(defs: &mut Vec<Def>, item: usize, stmt: &Stmt) {
     match stmt {
-        Stmt::Let { name, name_span, .. } => {
-            defs.push(Def { name: name.clone(), span: *name_span, item, is_global: false });
+        Stmt::Let {
+            name, name_span, ..
+        } => {
+            defs.push(Def {
+                name: name.clone(),
+                span: *name_span,
+                item,
+                is_global: false,
+            });
         }
-        Stmt::For { variable, var_span, body, .. } => {
-            defs.push(Def { name: variable.clone(), span: *var_span, item, is_global: false });
+        Stmt::For {
+            variable,
+            var_span,
+            body,
+            ..
+        } => {
+            defs.push(Def {
+                name: variable.clone(),
+                span: *var_span,
+                item,
+                is_global: false,
+            });
             for s in body {
                 push_stmt_defs(defs, item, s);
             }
         }
         Stmt::Loop(_, body)
         | Stmt::While { body, .. }
-        | Stmt::Guard { else_body: body, .. } => {
+        | Stmt::Guard {
+            else_body: body, ..
+        } => {
             for s in body {
                 push_stmt_defs(defs, item, s);
             }
@@ -474,19 +537,42 @@ fn collect_defs(program: &Program) -> (Vec<Def>, Vec<(usize, LineCol)>) {
 
     for (i, item) in program.items.iter().enumerate() {
         match item {
-            TopLevelItem::Function { name, name_span, params, body, .. } => {
+            TopLevelItem::Function {
+                name,
+                name_span,
+                params,
+                body,
+                ..
+            } => {
                 items.push((i, name_span.start));
-                defs.push(Def { name: name.clone(), span: *name_span, item: i, is_global: true });
+                defs.push(Def {
+                    name: name.clone(),
+                    span: *name_span,
+                    item: i,
+                    is_global: true,
+                });
                 for p in params {
-                    defs.push(Def { name: p.name.clone(), span: p.name_span, item: i, is_global: false });
+                    defs.push(Def {
+                        name: p.name.clone(),
+                        span: p.name_span,
+                        item: i,
+                        is_global: false,
+                    });
                 }
                 for s in body {
                     push_stmt_defs(&mut defs, i, s);
                 }
             }
-            TopLevelItem::Struct { name, name_span, .. } => {
+            TopLevelItem::Struct {
+                name, name_span, ..
+            } => {
                 items.push((i, name_span.start));
-                defs.push(Def { name: name.clone(), span: *name_span, item: i, is_global: true });
+                defs.push(Def {
+                    name: name.clone(),
+                    span: *name_span,
+                    item: i,
+                    is_global: true,
+                });
             }
             TopLevelItem::Impl { methods, .. } => {
                 let start = methods
@@ -503,7 +589,12 @@ fn collect_defs(program: &Program) -> (Vec<Def>, Vec<(usize, LineCol)>) {
                 }
                 for m in methods {
                     for p in &m.params {
-                        defs.push(Def { name: p.name.clone(), span: p.name_span, item: i, is_global: false });
+                        defs.push(Def {
+                            name: p.name.clone(),
+                            span: p.name_span,
+                            item: i,
+                            is_global: false,
+                        });
                     }
                     for s in &m.body {
                         push_stmt_defs(&mut defs, i, s);
@@ -524,7 +615,10 @@ fn collect_defs(program: &Program) -> (Vec<Def>, Vec<(usize, LineCol)>) {
 fn resolve_definition(program: Option<&Program>, pos: (usize, usize), word: &str) -> Option<Span> {
     let program = program?;
     let (defs, items) = collect_defs(program);
-    let pos_lc = LineCol { line: pos.0 + 1, col: pos.1 + 1 };
+    let pos_lc = LineCol {
+        line: pos.0 + 1,
+        col: pos.1 + 1,
+    };
 
     let cur = items
         .iter()
@@ -542,7 +636,9 @@ fn resolve_definition(program: Option<&Program>, pos: (usize, usize), word: &str
             continue;
         }
         if lc_le(&d.span.start, &pos_lc)
-            && (best.is_none() || lc_gt(&d.span.start, &best.as_ref().unwrap().start))
+            && best
+                .as_ref()
+                .is_none_or(|best| lc_gt(&d.span.start, &best.start))
         {
             best = Some(d.span);
         }
@@ -602,7 +698,10 @@ mod tests {
 
     #[test]
     fn word_at_finds_identifier_under_cursor() {
-        assert_eq!(word_at("let count: Int64 = 1;", 0, 6), Some("count".to_string()));
+        assert_eq!(
+            word_at("let count: Int64 = 1;", 0, 6),
+            Some("count".to_string())
+        );
         assert_eq!(word_at("let count: Int64 = 1;", 0, 100), None);
         assert_eq!(word_at("select {", 0, 1), Some("select".to_string()));
     }
@@ -610,7 +709,9 @@ mod tests {
     #[test]
     fn definition_resolves_local_let_and_param() {
         let src = "@fn main() -> Void {\n    let x: Int64 = 5;\n    let y: Int64 = x + 1;\n}\n";
-        let program = Lexer::new(src).tokenize().ok()
+        let program = Lexer::new(src)
+            .tokenize()
+            .ok()
             .and_then(|t| Parser::new(t).parse_program().ok())
             .unwrap();
         // Cursor over the usage of `x` on line 3: resolves to the let on line 2.
@@ -618,7 +719,9 @@ mod tests {
         assert_eq!((span.start.line, span.start.col), (2, 9));
         // Param-style: use a function argument in the body.
         let src2 = "@fn add(a: Int64, b: Int64) -> Int64 {\n    return a + b;\n}\n";
-        let p2 = Lexer::new(src2).tokenize().ok()
+        let p2 = Lexer::new(src2)
+            .tokenize()
+            .ok()
             .and_then(|t| Parser::new(t).parse_program().ok())
             .unwrap();
         let span2 = resolve_definition(Some(&p2), (1, 16), "a").unwrap();
@@ -628,7 +731,9 @@ mod tests {
     #[test]
     fn definition_resolves_function_name_and_ignores_foreign_let() {
         let src = "@fn helper() -> Void {\n    let tmp: Int64 = 1;\n}\n@fn main() -> Void {\n    helper();\n}\n";
-        let program = Lexer::new(src).tokenize().ok()
+        let program = Lexer::new(src)
+            .tokenize()
+            .ok()
             .and_then(|t| Parser::new(t).parse_program().ok())
             .unwrap();
         // Global function reference.
@@ -643,7 +748,9 @@ mod tests {
     #[test]
     fn definition_resolves_struct_name() {
         let src = "@struct Point { x: Float64, y: Float64 }\n@fn main() -> Void {\n    let p: Point = point(1, 2);\n}\n";
-        let program = Lexer::new(src).tokenize().ok()
+        let program = Lexer::new(src)
+            .tokenize()
+            .ok()
             .and_then(|t| Parser::new(t).parse_program().ok())
             .unwrap();
         let span = resolve_definition(Some(&program), (2, 12), "Point").unwrap();

@@ -1,18 +1,18 @@
 // NeuralScript example: a minimal transformer trained end-to-end via AOT
-// reverse-mode, demonstrating the full v1.3 layer stack:
+// reverse-mode, demonstrating the full transformer layer stack:
 //
 //   Embedding → Attention → LayerNorm → MLP (GELU) → Dense → CE
 //
 // Build & run:
-//   ./build/nsc examples/transformer.ns --check        # shape check
-//   ./build/nsc examples/transformer.ns --mlir          # MLIR dump
-//   ./build/nsc examples/transformer.ns --cpp --runtime # self-contained CPU driver
-//   ./build/nsc examples/transformer.ns --cuda --runtime # CUDA runtime driver
+//   glyphc nns examples/nns/transformer.ns --check        # shape check
+//   glyphc nns examples/nns/transformer.ns --mlir          # MLIR dump
+//   glyphc nns examples/nns/transformer.ns --cpp --runtime # self-contained CPU driver
+//   glyphc nns examples/nns/transformer.ns --cuda --runtime # CUDA runtime driver
 //
 // C-ABI training loop (after nsc --runtime):
 //   ns_model* m = ns_runtime_init(w.data(), w.size());
 //   for (int i = 0; i < steps; i++) {
-//       ns_runtime_train_step(m, xs, ys, seq_len * d_model, &loss, lr);
+//       ns_runtime_train_step(m, xs, ys, seq_len, &loss, lr);
 //   }
 
 type Seq   = Dynamic   // sequence length (resolved at runtime)
@@ -27,11 +27,11 @@ type C     = Vocab     // number of classes (copy-token task)
 // This requires attention: each position must attend to position 0 to read
 // the class id, then predict it through the classification head.
 //
-// Input format:  x[seq, D]  – each row is a one-hot-ish embedding of a token
+// Input format:  x[seq]  – token IDs
 // Label format:  y[seq, C]  – one-hot class (same at every position)
 
 network Transformer {
-    input:  Tensor[Seq, D] float32
+    input:  Tensor[Seq] float32
     output: Tensor[Seq, C] float32
 
     layer emb = Embedding(vocab_size: Vocab, d_model: D)
@@ -54,7 +54,7 @@ network Transformer {
 
     // AOT training step: full forward + reverse-mode through Attention,
     // LayerNorm, Embedding, and MLP, ending in cross-entropy loss.
-    train(x: Tensor[Seq, D], labels: Tensor[Seq, C]) -> float32 {
+    train(x: Tensor[Seq], labels: Tensor[Seq, C]) -> float32 {
         grad {
             var h  = x -> emb
             var a  = h -> attn

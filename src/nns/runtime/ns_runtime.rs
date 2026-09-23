@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Exact text of the NNS C-ABI runtime header, embedded so glyphc can
 //! (re)emit `ns_runtime.h` next to generated model sources.
 //!

@@ -6,6 +6,7 @@
 //! We also smoke-check CPU output with `g++ -fsyntax-only` if available and
 //! verify the runtime flag injects C-ABI symbols.
 
+use glyphc::nns::ast::Dtype;
 use glyphc::nns::codegen::codegen::{CodeGenerator, CodegenOptions, TargetBackend};
 use glyphc::nns::lexer::Lexer;
 use glyphc::nns::mlir::fusion::FusionPass;
@@ -47,17 +48,24 @@ fn compile_ns(src: &str, backend: TargetBackend, runtime: bool) -> Result<String
     let _ = fuse.run(&mut module);
 
     // Stage 5: Codegen
-    let mut opts = CodegenOptions::default();
-    opts.backend = backend;
-    opts.emit_runtime_driver = runtime;
-    let cg = CodeGenerator::default();
+    let opts = CodegenOptions {
+        backend,
+        emit_runtime_driver: runtime,
+        ..CodegenOptions::default()
+    };
+    let cg = CodeGenerator;
     match cg.generate(&module, &opts) {
         Ok(code) => Ok(code),
         Err(e) => {
             // Prefer codegen error (contains "cannot infer static shape") for negative tests
             if e.0.contains("cannot infer static shape") {
                 Err(e)
-            } else if !shape_ok && !shape_msgs.is_empty() && shape_msgs.iter().any(|m| m.contains("cannot infer static shape")) {
+            } else if !shape_ok
+                && !shape_msgs.is_empty()
+                && shape_msgs
+                    .iter()
+                    .any(|m| m.contains("cannot infer static shape"))
+            {
                 Err(NsError(shape_msgs.join("; ")))
             } else if !shape_ok && !shape_msgs.is_empty() {
                 // Surface shape error if codegen didn't already explain the failure
@@ -146,7 +154,10 @@ fn assert_gcc_ok(code: &str) {
             let stderr = String::from_utf8_lossy(&out.stderr);
             // If stderr mentions cuda headers we skip, otherwise fail.
             if stderr.contains("cuda_runtime.h") || stderr.contains("curand") {
-                eprintln!("skipping gcc check for CUDA-like output (missing headers): {}", stderr.lines().next().unwrap_or(""));
+                eprintln!(
+                    "skipping gcc check for CUDA-like output (missing headers): {}",
+                    stderr.lines().next().unwrap_or("")
+                );
                 return;
             }
             panic!("g++ -fsyntax-only failed:\n{}", stderr);
@@ -177,7 +188,9 @@ fn assert_common(code: &str, backend: TargetBackend) {
         TargetBackend::CpuCxx | TargetBackend::CpuSimd => {
             // CPU reference backend uses ns_matmul / ns_layernorm helpers
             assert!(
-                code.contains("ns_matmul") || code.contains("ns_attention") || code.contains("ns_embedding"),
+                code.contains("ns_matmul")
+                    || code.contains("ns_attention")
+                    || code.contains("ns_embedding"),
                 "CPU output missing expected kernel helpers (ns_matmul/ns_attention/ns_embedding)"
             );
         }
@@ -202,7 +215,10 @@ fn mlp_cuda_generates() {
     let src = example_src("mlp");
     let code = compile_ns(&src, TargetBackend::Cuda, false).expect("mlp cuda codegen failed");
     assert_common(&code, TargetBackend::Cuda);
-    assert!(code.contains("ns_gemm_kernel") || code.contains("NS_LAUNCH"), "mlp cuda missing gemm kernel");
+    assert!(
+        code.contains("ns_gemm_kernel") || code.contains("NS_LAUNCH"),
+        "mlp cuda missing gemm kernel"
+    );
     // CUDA needs headers, skip gcc
     assert!(!code.is_empty());
 }
@@ -324,10 +340,19 @@ fn static_cuda_generates() {
 
 #[test]
 fn all_networks_produce_nonempty_code() {
-    for name in ["mlp", "moe_growth", "transformer", "dense", "neumoe", "static"] {
+    for name in [
+        "mlp",
+        "moe_growth",
+        "transformer",
+        "dense",
+        "neumoe",
+        "static",
+    ] {
         let src = example_src(name);
-        let cpp = compile_ns(&src, TargetBackend::CpuCxx, false).unwrap_or_else(|e| panic!("{} cpp: {}", name, e));
-        let cuda = compile_ns(&src, TargetBackend::Cuda, false).unwrap_or_else(|e| panic!("{} cuda: {}", name, e));
+        let cpp = compile_ns(&src, TargetBackend::CpuCxx, false)
+            .unwrap_or_else(|e| panic!("{} cpp: {}", name, e));
+        let cuda = compile_ns(&src, TargetBackend::Cuda, false)
+            .unwrap_or_else(|e| panic!("{} cuda: {}", name, e));
         assert!(!cpp.is_empty(), "{} cpp empty", name);
         assert!(!cuda.is_empty(), "{} cuda empty", name);
         assert_common(&cpp, TargetBackend::CpuCxx);
@@ -367,13 +392,34 @@ fn invalid_dynamic_dims_cpu_returns_err() {
 #[test]
 fn invalid_dynamic_dims_cuda_returns_err() {
     let res = compile_ns(DYNAMIC_IN_DENSE_SRC, TargetBackend::Cuda, false);
-    assert!(res.is_err(), "expected Err for dynamic dims on CUDA, got Ok");
+    assert!(
+        res.is_err(),
+        "expected Err for dynamic dims on CUDA, got Ok"
+    );
     let msg = res.unwrap_err().to_string();
     assert!(
         msg.contains("cannot infer static shape"),
         "expected 'cannot infer static shape' in CUDA error, got: {}",
         msg
     );
+}
+
+#[test]
+fn cpu_simd_target_is_explicitly_marked() {
+    let code = compile_ns(&example_src("mlp"), TargetBackend::CpuSimd, false)
+        .expect("SIMD target should generate the CPU reference");
+    assert!(code.contains("CPU SIMD backend requested"));
+}
+
+#[test]
+fn unsupported_quantized_and_native_float16_dtypes_are_rejected() {
+    let generator = CodeGenerator;
+    for dtype in [Dtype::Fp8, Dtype::Fp4, Dtype::Float16] {
+        let error = generator
+            .dtype_c_name(dtype)
+            .expect_err("unsupported dtype must not map to a C type");
+        assert!(error.to_string().contains("implemented"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -394,11 +440,16 @@ fn runtime_flag_adds_symbols_cpp() {
         "runtime cpp missing ns_runtime_init"
     );
     assert!(
-        with.contains("ns_runtime_train_step") || with.contains("ns_train_core") || with.contains("ns_train_step"),
+        with.contains("ns_runtime_train_step")
+            || with.contains("ns_train_core")
+            || with.contains("ns_train_step"),
         "runtime cpp missing train_step symbol, got first 500 chars: {}",
         &with[..with.len().min(500)]
     );
-    assert!(with.contains("ns_eval_infer") || with.contains("ns_model"), "runtime cpp missing ns_model symbols");
+    assert!(
+        with.contains("ns_eval_infer") || with.contains("ns_model"),
+        "runtime cpp missing ns_model symbols"
+    );
     assert_gcc_ok(&with);
 }
 
@@ -406,7 +457,10 @@ fn runtime_flag_adds_symbols_cpp() {
 fn runtime_flag_adds_symbols_cuda() {
     let src = example_src("mlp");
     let with = compile_ns(&src, TargetBackend::Cuda, true).expect("cuda runtime");
-    assert!(with.contains("ns_runtime_init"), "cuda runtime missing ns_runtime_init");
+    assert!(
+        with.contains("ns_runtime_init"),
+        "cuda runtime missing ns_runtime_init"
+    );
     assert!(
         with.contains("ns_runtime_train_step") || with.contains("ns_train_core"),
         "cuda runtime missing train_step, snippet: {}",

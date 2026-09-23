@@ -1,5 +1,8 @@
 use crate::ast::*;
-use crate::generics::{infer_with_expected, instance_c_name, substitute_params, substitute_stmt, substitute_type, GenericFnInfo};
+use crate::generics::{
+    infer_with_expected, instance_c_name, substitute_params, substitute_stmt, substitute_type,
+    GenericFnInfo,
+};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -72,10 +75,7 @@ pub enum TypeError {
     },
 
     #[error("line {span}: {source}")]
-    AtSpan {
-        span: Span,
-        source: Box<TypeError>,
-    },
+    AtSpan { span: Span, source: Box<TypeError> },
 
     #[error("use after free: '{name}' (list/map buffer was freed by .free())")]
     UseAfterFree { name: String },
@@ -121,6 +121,12 @@ pub enum TypeDefinition {
 pub struct EnumVariantInfo {
     pub name: String,
     pub data: Option<Vec<Type>>,
+}
+
+impl Default for TypeEnv {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TypeEnv {
@@ -175,6 +181,12 @@ pub struct TypeChecker {
     freed_vars: HashSet<String>,
 }
 
+impl Default for TypeChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeChecker {
     pub fn new() -> Self {
         let mut env = TypeEnv::new();
@@ -194,8 +206,14 @@ impl TypeChecker {
             "Option".to_string(),
             TypeDefinition::Enum {
                 variants: vec![
-                    EnumVariantInfo { name: "Some".to_string(), data: None },
-                    EnumVariantInfo { name: "None".to_string(), data: None },
+                    EnumVariantInfo {
+                        name: "Some".to_string(),
+                        data: None,
+                    },
+                    EnumVariantInfo {
+                        name: "None".to_string(),
+                        data: None,
+                    },
                 ],
             },
         );
@@ -203,88 +221,603 @@ impl TypeChecker {
             "Result".to_string(),
             TypeDefinition::Enum {
                 variants: vec![
-                    EnumVariantInfo { name: "Ok".to_string(), data: None },
-                    EnumVariantInfo { name: "Err".to_string(), data: None },
+                    EnumVariantInfo {
+                        name: "Ok".to_string(),
+                        data: None,
+                    },
+                    EnumVariantInfo {
+                        name: "Err".to_string(),
+                        data: None,
+                    },
                 ],
             },
         );
 
         // std.math
-        env.define_function("abs".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("min".to_string(), FunctionSignature { params: vec![("a".into(), Type::Float64, false), ("b".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("max".to_string(), FunctionSignature { params: vec![("a".into(), Type::Float64, false), ("b".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("clamp".to_string(), FunctionSignature { params: vec![("value".into(), Type::Float64, false), ("low".into(), Type::Float64, false), ("high".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("sqrt".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("pow".to_string(), FunctionSignature { params: vec![("base".into(), Type::Float64, false), ("exp".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("floor".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Int64), is_async: false });
-        env.define_function("ceil".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Int64), is_async: false });
-        env.define_function("round".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Int64), is_async: false });
-        env.define_function("log".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("log2".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("log10".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("sin".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("cos".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
-        env.define_function("tan".to_string(), FunctionSignature { params: vec![("x".into(), Type::Float64, false)], return_type: Some(Type::Float64), is_async: false });
+        env.define_function(
+            "abs".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "min".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("a".into(), Type::Float64, false),
+                    ("b".into(), Type::Float64, false),
+                ],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "max".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("a".into(), Type::Float64, false),
+                    ("b".into(), Type::Float64, false),
+                ],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "clamp".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("value".into(), Type::Float64, false),
+                    ("low".into(), Type::Float64, false),
+                    ("high".into(), Type::Float64, false),
+                ],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "sqrt".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "pow".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("base".into(), Type::Float64, false),
+                    ("exp".into(), Type::Float64, false),
+                ],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "floor".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Int64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "ceil".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Int64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "round".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Int64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "log".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "log2".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "log10".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "sin".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "cos".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "tan".to_string(),
+            FunctionSignature {
+                params: vec![("x".into(), Type::Float64, false)],
+                return_type: Some(Type::Float64),
+                is_async: false,
+            },
+        );
 
         // std.io
-        env.define_function("println".to_string(), FunctionSignature { params: vec![("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("eprintln".to_string(), FunctionSignature { params: vec![("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("print_int".to_string(), FunctionSignature { params: vec![("value".into(), Type::Int64, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("print_float".to_string(), FunctionSignature { params: vec![("value".into(), Type::Float64, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("print_bool".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("read_line".to_string(), FunctionSignature { params: vec![], return_type: Some(Type::String), is_async: false });
+        env.define_function(
+            "println".to_string(),
+            FunctionSignature {
+                params: vec![("msg".into(), Type::String, false)],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "eprintln".to_string(),
+            FunctionSignature {
+                params: vec![("msg".into(), Type::String, false)],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "print_int".to_string(),
+            FunctionSignature {
+                params: vec![("value".into(), Type::Int64, false)],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "print_float".to_string(),
+            FunctionSignature {
+                params: vec![("value".into(), Type::Float64, false)],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "print_bool".to_string(),
+            FunctionSignature {
+                params: vec![("value".into(), Type::Bool, false)],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "read_line".to_string(),
+            FunctionSignature {
+                params: vec![],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
 
         // std.string
-        env.define_function("len".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false)], return_type: Some(Type::Int64), is_async: false });
-        env.define_function("substring".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false), ("start".into(), Type::Int64, false), ("end".into(), Type::Int64, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("contains".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false), ("sub".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
-        env.define_function("replace".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false), ("from".into(), Type::String, false), ("to".into(), Type::String, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("split".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false), ("delimiter".into(), Type::String, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("trim".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("to_upper".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("to_lower".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("starts_with".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false), ("prefix".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
-        env.define_function("ends_with".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false), ("suffix".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
-        env.define_function("parse_int".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false)], return_type: Some(Type::Option(Box::new(Type::Int64))), is_async: false });
-        env.define_function("parse_float".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false)], return_type: Some(Type::Option(Box::new(Type::Float64))), is_async: false });
-        env.define_function("int_to_string".to_string(), FunctionSignature { params: vec![("value".into(), Type::Int64, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("float_to_string".to_string(), FunctionSignature { params: vec![("value".into(), Type::Float64, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("bool_to_string".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("char_at".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false), ("index".into(), Type::Int64, false)], return_type: Some(Type::String), is_async: false });
+        env.define_function(
+            "len".to_string(),
+            FunctionSignature {
+                params: vec![("s".into(), Type::String, false)],
+                return_type: Some(Type::Int64),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "substring".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("s".into(), Type::String, false),
+                    ("start".into(), Type::Int64, false),
+                    ("end".into(), Type::Int64, false),
+                ],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "contains".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("s".into(), Type::String, false),
+                    ("sub".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "replace".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("s".into(), Type::String, false),
+                    ("from".into(), Type::String, false),
+                    ("to".into(), Type::String, false),
+                ],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "split".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("s".into(), Type::String, false),
+                    ("delimiter".into(), Type::String, false),
+                ],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "trim".to_string(),
+            FunctionSignature {
+                params: vec![("s".into(), Type::String, false)],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "to_upper".to_string(),
+            FunctionSignature {
+                params: vec![("s".into(), Type::String, false)],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "to_lower".to_string(),
+            FunctionSignature {
+                params: vec![("s".into(), Type::String, false)],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "starts_with".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("s".into(), Type::String, false),
+                    ("prefix".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "ends_with".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("s".into(), Type::String, false),
+                    ("suffix".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "parse_int".to_string(),
+            FunctionSignature {
+                params: vec![("s".into(), Type::String, false)],
+                return_type: Some(Type::Option(Box::new(Type::Int64))),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "parse_float".to_string(),
+            FunctionSignature {
+                params: vec![("s".into(), Type::String, false)],
+                return_type: Some(Type::Option(Box::new(Type::Float64))),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "int_to_string".to_string(),
+            FunctionSignature {
+                params: vec![("value".into(), Type::Int64, false)],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "float_to_string".to_string(),
+            FunctionSignature {
+                params: vec![("value".into(), Type::Float64, false)],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "bool_to_string".to_string(),
+            FunctionSignature {
+                params: vec![("value".into(), Type::Bool, false)],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "char_at".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("s".into(), Type::String, false),
+                    ("index".into(), Type::Int64, false),
+                ],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
 
         // std.fs
-        env.define_function("file_read".to_string(), FunctionSignature { params: vec![("path".into(), Type::String, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("file_write".to_string(), FunctionSignature { params: vec![("path".into(), Type::String, false), ("content".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
-        env.define_function("file_append".to_string(), FunctionSignature { params: vec![("path".into(), Type::String, false), ("content".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
-        env.define_function("file_exists".to_string(), FunctionSignature { params: vec![("path".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
-        env.define_function("create_dir".to_string(), FunctionSignature { params: vec![("path".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
-        env.define_function("remove_file".to_string(), FunctionSignature { params: vec![("path".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
-        env.define_function("list_dir".to_string(), FunctionSignature { params: vec![("path".into(), Type::String, false)], return_type: Some(Type::String), is_async: false });
-        env.define_function("file_copy".to_string(), FunctionSignature { params: vec![("src".into(), Type::String, false), ("dst".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
-        env.define_function("file_rename".to_string(), FunctionSignature { params: vec![("old".into(), Type::String, false), ("new".into(), Type::String, false)], return_type: Some(Type::Bool), is_async: false });
+        env.define_function(
+            "file_read".to_string(),
+            FunctionSignature {
+                params: vec![("path".into(), Type::String, false)],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "file_write".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("path".into(), Type::String, false),
+                    ("content".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "file_append".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("path".into(), Type::String, false),
+                    ("content".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "file_exists".to_string(),
+            FunctionSignature {
+                params: vec![("path".into(), Type::String, false)],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "create_dir".to_string(),
+            FunctionSignature {
+                params: vec![("path".into(), Type::String, false)],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "remove_file".to_string(),
+            FunctionSignature {
+                params: vec![("path".into(), Type::String, false)],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "list_dir".to_string(),
+            FunctionSignature {
+                params: vec![("path".into(), Type::String, false)],
+                return_type: Some(Type::String),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "file_copy".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("src".into(), Type::String, false),
+                    ("dst".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "file_rename".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("old".into(), Type::String, false),
+                    ("new".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Bool),
+                is_async: false,
+            },
+        );
 
         // std.mem
-        env.define_function("alloc".to_string(), FunctionSignature { params: vec![("size".into(), Type::Int64, false)], return_type: Some(Type::Bytes), is_async: false });
-        env.define_function("free".to_string(), FunctionSignature { params: vec![("ptr".into(), Type::Bytes, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("memcpy".to_string(), FunctionSignature { params: vec![("dst".into(), Type::Bytes, false), ("src".into(), Type::Bytes, false), ("size".into(), Type::Int64, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("memset".to_string(), FunctionSignature { params: vec![("dst".into(), Type::Bytes, false), ("value".into(), Type::Int64, false), ("size".into(), Type::Int64, false)], return_type: Some(Type::Void), is_async: false });
+        env.define_function(
+            "alloc".to_string(),
+            FunctionSignature {
+                params: vec![("size".into(), Type::Int64, false)],
+                return_type: Some(Type::Bytes),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "free".to_string(),
+            FunctionSignature {
+                params: vec![("ptr".into(), Type::Bytes, false)],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "memcpy".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("dst".into(), Type::Bytes, false),
+                    ("src".into(), Type::Bytes, false),
+                    ("size".into(), Type::Int64, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "memset".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("dst".into(), Type::Bytes, false),
+                    ("value".into(), Type::Int64, false),
+                    ("size".into(), Type::Int64, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
 
         // std.conv
-        env.define_function("to_int".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false)], return_type: Some(Type::Option(Box::new(Type::Int64))), is_async: false });
-        env.define_function("to_float".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false)], return_type: Some(Type::Option(Box::new(Type::Float64))), is_async: false });
-        env.define_function("to_bool".to_string(), FunctionSignature { params: vec![("s".into(), Type::String, false)], return_type: Some(Type::Option(Box::new(Type::Bool))), is_async: false });
+        env.define_function(
+            "to_int".to_string(),
+            FunctionSignature {
+                params: vec![("s".into(), Type::String, false)],
+                return_type: Some(Type::Option(Box::new(Type::Int64))),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "to_float".to_string(),
+            FunctionSignature {
+                params: vec![("s".into(), Type::String, false)],
+                return_type: Some(Type::Option(Box::new(Type::Float64))),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "to_bool".to_string(),
+            FunctionSignature {
+                params: vec![("s".into(), Type::String, false)],
+                return_type: Some(Type::Option(Box::new(Type::Bool))),
+                is_async: false,
+            },
+        );
 
         // std.assert
-        env.define_function("assert".to_string(), FunctionSignature { params: vec![("condition".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("assert_eq".to_string(), FunctionSignature { params: vec![("a".into(), Type::String, false), ("b".into(), Type::String, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("assert_ne".to_string(), FunctionSignature { params: vec![("a".into(), Type::String, false), ("b".into(), Type::String, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("assert_true".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("assert_false".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
+        env.define_function(
+            "assert".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("condition".into(), Type::Bool, false),
+                    ("msg".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "assert_eq".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("a".into(), Type::String, false),
+                    ("b".into(), Type::String, false),
+                    ("msg".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "assert_ne".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("a".into(), Type::String, false),
+                    ("b".into(), Type::String, false),
+                    ("msg".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "assert_true".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("value".into(), Type::Bool, false),
+                    ("msg".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "assert_false".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("value".into(), Type::Bool, false),
+                    ("msg".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
 
         // test framework
-        env.define_function("__builtin_assert".to_string(), FunctionSignature { params: vec![("condition".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("__builtin_assert_true".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
-        env.define_function("__builtin_assert_false".to_string(), FunctionSignature { params: vec![("value".into(), Type::Bool, false), ("msg".into(), Type::String, false)], return_type: Some(Type::Void), is_async: false });
+        env.define_function(
+            "__builtin_assert".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("condition".into(), Type::Bool, false),
+                    ("msg".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "__builtin_assert_true".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("value".into(), Type::Bool, false),
+                    ("msg".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
+        env.define_function(
+            "__builtin_assert_false".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("value".into(), Type::Bool, false),
+                    ("msg".into(), Type::String, false),
+                ],
+                return_type: Some(Type::Void),
+                is_async: false,
+            },
+        );
 
         TypeChecker {
             env,
@@ -348,9 +881,7 @@ impl TypeChecker {
                     }
                     if *is_test {
                         if !params.is_empty() {
-                            return Err(TypeError::TestFunctionParams {
-                                name: name.clone(),
-                            });
+                            return Err(TypeError::TestFunctionParams { name: name.clone() });
                         }
                         match return_type {
                             Some(Type::Void) | None => {}
@@ -373,14 +904,13 @@ impl TypeChecker {
                     self.env.define_function(name.clone(), sig);
                 }
                 TopLevelItem::Impl {
-                    type_name,
-                    methods,
-                    ..
+                    type_name, methods, ..
                 } => {
                     // Register impl methods as functions
                     for method in methods {
                         let sig = FunctionSignature {
-                            params: method.params
+                            params: method
+                                .params
                                 .iter()
                                 .map(|p| (p.name.clone(), p.ty.clone(), p.is_move))
                                 .collect(),
@@ -392,7 +922,9 @@ impl TypeChecker {
                         self.env.define_function(full_name, sig);
                     }
                 }
-                TopLevelItem::Const { name, ty, value, .. } => {
+                TopLevelItem::Const {
+                    name, ty, value, ..
+                } => {
                     let value_type = self.check_expression(value)?;
                     if !self.types_compatible(ty, &value_type)
                         && !self.int_literal_satisfies(ty, &value_type, value)
@@ -456,9 +988,7 @@ impl TypeChecker {
                 Ok(())
             }
             TopLevelItem::Impl {
-                type_name,
-                methods,
-                ..
+                type_name, methods, ..
             } => {
                 for method in methods {
                     let mut func_env = self.env.clone();
@@ -502,11 +1032,7 @@ impl TypeChecker {
         )
     }
 
-    fn check_assert_builtin_call(
-        &mut self,
-        name: &str,
-        args: &[Expr],
-    ) -> Result<Type, TypeError> {
+    fn check_assert_builtin_call(&mut self, name: &str, args: &[Expr]) -> Result<Type, TypeError> {
         let is_eq = name.ends_with("assert_eq") || name.ends_with("assert_ne");
 
         // assert/assert_true/assert_false: (Bool, String)
@@ -668,7 +1194,11 @@ impl TypeChecker {
             for p in &concrete_params {
                 func_env.define_variable(p.name.clone(), p.ty.clone());
             }
-            let body: Vec<Stmt> = info.body.iter().map(|s| substitute_stmt(&subst, s)).collect();
+            let body: Vec<Stmt> = info
+                .body
+                .iter()
+                .map(|s| substitute_stmt(&subst, s))
+                .collect();
             let outer_freed = self.freed_vars.clone();
             self.check_block_swapped(func_env, &body, info.return_type.as_ref())?;
             // A generic instantiation is a separate function: its statements
@@ -704,10 +1234,10 @@ impl TypeChecker {
         }
 
         let then_type = self.check_expression(then_branch)?;
-        if else_branch.is_none() {
+        let Some(else_branch) = else_branch else {
             return Ok(Type::Void);
-        }
-        let _ = self.check_expression(else_branch.as_ref().unwrap())?;
+        };
+        let _ = self.check_expression(else_branch)?;
         // Statement form: keep the then-branch type without requiring the
         // branches to share a value type, so guard chains and branches that
         // diverge via `return` typecheck.
@@ -717,16 +1247,17 @@ impl TypeChecker {
     fn check_statement(&mut self, stmt: &Stmt) -> Result<Option<Type>, TypeError> {
         match stmt {
             Stmt::Let {
-                name,
-                ty,
-                value,
-                mutable: _,
-                ..
+                name, ty, value, ..
             } => {
                 // A generic call with a declared type: infer remaining type
                 // parameters from the annotation (e.g. `E` in `-> Result<T, E>`).
                 let value_type = match (ty, value) {
-                    (Some(expected), Expr::FunctionCall { name: callee, args, .. }) => {
+                    (
+                        Some(expected),
+                        Expr::FunctionCall {
+                            name: callee, args, ..
+                        },
+                    ) => {
                         if let Expr::Identifier(n, _) = callee.as_ref() {
                             let fname = n.replace("::", "_");
                             if let Some(info) = self.generic_fns.get(&fname).cloned() {
@@ -764,13 +1295,10 @@ impl TypeChecker {
                 Ok(None)
             }
             Stmt::Assignment { target, value, .. } => {
-                match target {
-                    // Writing a whole variable does not read the old buffer:
-                    // the freed mark is lifted before checking the RHS.
-                    Expr::Identifier(name, _) => {
-                        self.freed_vars.remove(name);
-                    }
-                    _ => {}
+                // Writing a whole variable does not read the old buffer:
+                // the freed mark is lifted before checking the RHS.
+                if let Expr::Identifier(name, _) = target {
+                    self.freed_vars.remove(name);
                 }
 
                 let target_type = self.check_expression(target)?;
@@ -811,7 +1339,9 @@ impl TypeChecker {
                 self.check_block(body, None)?;
                 Ok(None)
             }
-            Stmt::While { condition, body, .. } => {
+            Stmt::While {
+                condition, body, ..
+            } => {
                 let cond_type = self.check_expression(condition)?;
                 if !matches!(cond_type, Type::Bool) {
                     return Err(TypeError::WhileConditionNotBool);
@@ -841,7 +1371,11 @@ impl TypeChecker {
                 self.check_block(body, None)?;
                 Ok(None)
             }
-            Stmt::Guard { condition, else_body, .. } => {
+            Stmt::Guard {
+                condition,
+                else_body,
+                ..
+            } => {
                 let cond_type = self.check_expression(condition)?;
                 if !matches!(cond_type, Type::Bool) {
                     return Err(TypeError::GuardConditionNotBool);
@@ -869,11 +1403,14 @@ impl TypeChecker {
                             saw_event = true;
                             let (object, method, args) = match target {
                                 Expr::MethodCall {
-                                    object, method, args, ..
+                                    object,
+                                    method,
+                                    args,
+                                    ..
                                 } => (object, method, args),
                                 other => {
                                     return Err(TypeError::SelectEventShape(
-                                        format!("{}", Self::expr_shape(other)),
+                                        Self::expr_shape(other).to_string(),
                                     ))
                                 }
                             };
@@ -971,9 +1508,7 @@ impl TypeChecker {
         let span = expr.span();
         let result = self.check_expression_raw(expr);
         result.map_err(|e| match e {
-            TypeError::AtLine { .. }
-            | TypeError::AtSpan { .. }
-            | TypeError::InFunction { .. } => e,
+            TypeError::AtLine { .. } | TypeError::AtSpan { .. } | TypeError::InFunction { .. } => e,
             other => TypeError::AtSpan {
                 span,
                 source: Box::new(other),
@@ -1002,7 +1537,9 @@ impl TypeChecker {
                 Err(TypeError::UndefinedVariable(name.clone()))
             }
 
-            Expr::BinaryOp { op, left, right, .. } => {
+            Expr::BinaryOp {
+                op, left, right, ..
+            } => {
                 let left_type = self.check_expression(left)?;
                 let right_type = self.check_expression(right)?;
 
@@ -1015,30 +1552,28 @@ impl TypeChecker {
                             _ => Err(TypeError::CannotApplyOperator(format!("{}", op))),
                         }
                     }
-                    BinOp::Concat => {
-                        match (&left_type, &right_type) {
-                            (Type::String, Type::String) => Ok(Type::String),
-                            (Type::String, Type::Int64) => Ok(Type::String),
-                            (Type::String, Type::Float64) => Ok(Type::String),
-                            (Type::String, Type::UInt64) => Ok(Type::String),
-                            (Type::String, Type::Bool) => Ok(Type::String),
-                            (Type::Int64, Type::String) => Ok(Type::String),
-                            (Type::Float64, Type::String) => Ok(Type::String),
-                            (Type::UInt64, Type::String) => Ok(Type::String),
-                            (Type::Bool, Type::String) => Ok(Type::String),
-                            (Type::List(a), Type::List(b)) => {
-                                if a == b {
-                                    Ok(Type::List(a.clone()))
-                                } else {
-                                    Err(TypeError::TypeMismatch {
-                                        expected: format!("{}", a),
-                                        found: format!("{}", b),
-                                    })
-                                }
+                    BinOp::Concat => match (&left_type, &right_type) {
+                        (Type::String, Type::String) => Ok(Type::String),
+                        (Type::String, Type::Int64) => Ok(Type::String),
+                        (Type::String, Type::Float64) => Ok(Type::String),
+                        (Type::String, Type::UInt64) => Ok(Type::String),
+                        (Type::String, Type::Bool) => Ok(Type::String),
+                        (Type::Int64, Type::String) => Ok(Type::String),
+                        (Type::Float64, Type::String) => Ok(Type::String),
+                        (Type::UInt64, Type::String) => Ok(Type::String),
+                        (Type::Bool, Type::String) => Ok(Type::String),
+                        (Type::List(a), Type::List(b)) => {
+                            if a == b {
+                                Ok(Type::List(a.clone()))
+                            } else {
+                                Err(TypeError::TypeMismatch {
+                                    expected: format!("{}", a),
+                                    found: format!("{}", b),
+                                })
                             }
-                            _ => Err(TypeError::CannotApplyOperator("Concat".to_string())),
                         }
-                    }
+                        _ => Err(TypeError::CannotApplyOperator("Concat".to_string())),
+                    },
                     BinOp::Eq | BinOp::Neq => {
                         if self.types_compatible(&left_type, &right_type) {
                             Ok(Type::Bool)
@@ -1090,7 +1625,9 @@ impl TypeChecker {
                 Ok(Type::Ref(Box::new(expr_type)))
             }
 
-            Expr::Cast { expr, target_type, .. } => {
+            Expr::Cast {
+                expr, target_type, ..
+            } => {
                 let source_type = self.check_expression(expr)?;
                 // Allow casting between numeric types and to/from String
                 match (&source_type, target_type) {
@@ -1120,7 +1657,11 @@ impl TypeChecker {
                         // Convert qualified name: math::add -> math_add
                         n.replace("::", "_")
                     }
-                    _ => return Err(TypeError::CannotCallNonFunction("non-identifier".to_string())),
+                    _ => {
+                        return Err(TypeError::CannotCallNonFunction(
+                            "non-identifier".to_string(),
+                        ))
+                    }
                 };
 
                 // Polymorphic assert builtins (work on Int64/UInt64/Float64/Bool/String)
@@ -1178,7 +1719,7 @@ impl TypeChecker {
                 method,
                 args,
                 ..
-} => {
+            } => {
                 // A repeated `.free()` on the same variable is a double free;
                 // checked before the object expression so the message is specific.
                 if method == "free" && args.is_empty() {
@@ -1294,9 +1835,7 @@ impl TypeChecker {
                                 })
                             }
                         }
-                        _ => {
-                            Err(TypeError::UndefinedFunction(format!("Map.{}", method)))
-                        }
+                        _ => Err(TypeError::UndefinedFunction(format!("Map.{}", method))),
                     },
                     Type::Channel(elem_type) => match method.as_str() {
                         "send" => {
@@ -1398,7 +1937,10 @@ impl TypeChecker {
                                 Ok(ret)
                             }
                         } else {
-                            Err(TypeError::UndefinedFunction(format!("{}.{}", type_name, method)))
+                            Err(TypeError::UndefinedFunction(format!(
+                                "{}.{}",
+                                type_name, method
+                            )))
                         }
                     }
                     _ => Err(TypeError::CannotCallNonFunction(format!("{}", object_type))),
@@ -1411,9 +1953,7 @@ impl TypeChecker {
                         match &object_type {
                             Type::List(_) | Type::Map(_, _) => {
                                 if self.freed_vars.contains(name) {
-                                    return Err(TypeError::DoubleFree {
-                                        name: name.clone(),
-                                    });
+                                    return Err(TypeError::DoubleFree { name: name.clone() });
                                 }
                                 self.freed_vars.insert(name.clone());
                             }
@@ -1474,9 +2014,7 @@ impl TypeChecker {
                         if matches!(&**index, Expr::Range { .. }) {
                             match &index_type {
                                 Type::List(range_elem) => match range_elem.as_ref() {
-                                    Type::Int64 | Type::UInt64 => {
-                                        Ok(Type::List(elem_type.clone()))
-                                    }
+                                    Type::Int64 | Type::UInt64 => Ok(Type::List(elem_type.clone())),
                                     other => Err(TypeError::TypeMismatch {
                                         expected: "Int64 or UInt64 range".to_string(),
                                         found: format!("{}", other),
@@ -1497,7 +2035,7 @@ impl TypeChecker {
                         }
                     }
                     Type::Map(key_type, value_type) => {
-                        if self.types_compatible(&key_type, &index_type) {
+                        if self.types_compatible(key_type, &index_type) {
                             Ok((**value_type).clone())
                         } else {
                             Err(TypeError::TypeMismatch {
@@ -1552,10 +2090,7 @@ impl TypeChecker {
 
             Expr::MapLiteral(pairs, _) => {
                 if pairs.is_empty() {
-                    return Ok(Type::Map(
-                        Box::new(Type::String),
-                        Box::new(Type::Void),
-                    ));
+                    return Ok(Type::Map(Box::new(Type::String), Box::new(Type::Void)));
                 }
                 let (first_key, first_value) = &pairs[0];
                 let key_type = self.check_expression(first_key)?;
@@ -1613,13 +2148,14 @@ impl TypeChecker {
                     } else if let Some(prev) = &result_ty {
                         // A Void arm body (e.g. an empty-branch block) must not
                         // downgrade the common type of the match expression.
-                        if !matches!(prev, Type::Void) && !matches!(body_ty, Type::Void) {
-                            if !self.types_compatible(prev, &body_ty) {
-                                return Err(TypeError::TypeMismatch {
-                                    expected: format!("{}", prev),
-                                    found: format!("{}", body_ty),
-                                });
-                            }
+                        if !matches!(prev, Type::Void)
+                            && !matches!(body_ty, Type::Void)
+                            && !self.types_compatible(prev, &body_ty)
+                        {
+                            return Err(TypeError::TypeMismatch {
+                                expected: format!("{}", prev),
+                                found: format!("{}", body_ty),
+                            });
                         }
                     }
                 }
@@ -1674,7 +2210,11 @@ impl TypeChecker {
                 outcome
             }
 
-            Expr::ChannelBounded { elem_type, capacity, .. } => {
+            Expr::ChannelBounded {
+                elem_type,
+                capacity,
+                ..
+            } => {
                 let cap_type = self.check_expression(capacity)?;
                 if !matches!(cap_type, Type::UInt64 | Type::Int64) {
                     return Err(TypeError::TypeMismatch {
@@ -1694,7 +2234,9 @@ impl TypeChecker {
                     .clone();
 
                 match type_def {
-                    TypeDefinition::Struct { fields: struct_fields } => {
+                    TypeDefinition::Struct {
+                        fields: struct_fields,
+                    } => {
                         // Check each field
                         for (field_name, field_value) in fields {
                             let field_type = self.check_expression(field_value)?;
@@ -1702,7 +2244,9 @@ impl TypeChecker {
                                 .iter()
                                 .find(|(n, _)| n == field_name)
                                 .map(|(_, t)| t)
-                                .ok_or_else(|| TypeError::UndefinedVariable(format!("{}.{}", name, field_name)))?;
+                                .ok_or_else(|| {
+                                    TypeError::UndefinedVariable(format!("{}.{}", name, field_name))
+                                })?;
 
                             if !self.types_compatible(expected_type, &field_type) {
                                 return Err(TypeError::TypeMismatch {
@@ -1715,12 +2259,17 @@ impl TypeChecker {
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: "Struct type".to_string(),
-                        found: format!("{}", name),
+                        found: name.to_string(),
                     }),
                 }
             }
 
-            Expr::EnumInit { enum_name, variant, args, .. } => {
+            Expr::EnumInit {
+                enum_name,
+                variant,
+                args,
+                ..
+            } => {
                 // Built-in phantom enums: Option::Some/None, Result::Ok/Err
                 if enum_name == "Option" {
                     return match variant.as_str() {
@@ -1743,10 +2292,7 @@ impl TypeChecker {
                             }
                             Ok(Type::Option(Box::new(Type::Void)))
                         }
-                        _ => Err(TypeError::UndefinedVariable(format!(
-                            "Option::{}",
-                            variant
-                        ))),
+                        _ => Err(TypeError::UndefinedVariable(format!("Option::{}", variant))),
                     };
                 }
                 if enum_name == "Result" {
@@ -1771,10 +2317,7 @@ impl TypeChecker {
                             let arg_type = self.check_expression(&args[0])?;
                             Ok(Type::Result(Box::new(Type::Void), Box::new(arg_type)))
                         }
-                        _ => Err(TypeError::UndefinedVariable(format!(
-                            "Result::{}",
-                            variant
-                        ))),
+                        _ => Err(TypeError::UndefinedVariable(format!("Result::{}", variant))),
                     };
                 }
 
@@ -1788,10 +2331,16 @@ impl TypeChecker {
                 match type_def {
                     TypeDefinition::Enum { variants } => {
                         // Find the variant
-                        let variant_def = variants
-                            .iter()
-                            .find(|v| v.name == *variant)
-                            .ok_or_else(|| TypeError::UndefinedVariable(format!("{}::{}", enum_name, variant)))?;
+                        let variant_def =
+                            variants
+                                .iter()
+                                .find(|v| v.name == *variant)
+                                .ok_or_else(|| {
+                                    TypeError::UndefinedVariable(format!(
+                                        "{}::{}",
+                                        enum_name, variant
+                                    ))
+                                })?;
 
                         // Check args count
                         let expected_data = variant_def.data.as_ref().map_or(0, |d| d.len());
@@ -1821,7 +2370,7 @@ impl TypeChecker {
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: "Enum type".to_string(),
-                        found: format!("{}", enum_name),
+                        found: enum_name.to_string(),
                     }),
                 }
             }
@@ -1880,70 +2429,58 @@ impl TypeChecker {
                 env.define_variable(name.clone(), expected_type.clone());
                 Ok(())
             }
-            Pattern::EnumVariant { enum_name: _, variant, data } => {
+            Pattern::EnumVariant {
+                enum_name: _,
+                variant,
+                data,
+            } => {
                 // Check if variant matches expected type
                 match expected_type {
-                    Type::Option(inner) => {
-                        match variant.as_str() {
-                            "Some" => {
-                                if data.as_ref().map_or(false, |d| d.len() != 1)
-                                    || data.is_none()
-                                {
-                                    return Err(TypeError::WrongArgumentCount {
-                                        expected: 1,
-                                        found: data.as_ref().map_or(0, |d| d.len()),
-                                    });
-                                }
-                                self.check_pattern(&data.as_ref().unwrap()[0], inner, env)?;
-                                Ok(())
-                            }
-                            "None" => {
-                                if data.is_some() {
-                                    return Err(TypeError::WrongArgumentCount {
-                                        expected: 0,
-                                        found: 1,
-                                    });
-                                }
-                                Ok(())
-                            }
-                            _ => Err(TypeError::UndefinedVariable(format!(
-                                "Option::{}",
-                                variant
-                            ))),
+                    Type::Option(inner) => match variant.as_str() {
+                        "Some" => {
+                            let Some([pattern]) = data.as_deref() else {
+                                return Err(TypeError::WrongArgumentCount {
+                                    expected: 1,
+                                    found: data.as_ref().map_or(0, |d| d.len()),
+                                });
+                            };
+                            self.check_pattern(pattern, inner, env)?;
+                            Ok(())
                         }
-                    }
-                    Type::Result(ok_ty, err_ty) => {
-                        match variant.as_str() {
-                            "Ok" => {
-                                if data.as_ref().map_or(false, |d| d.len() != 1)
-                                    || data.is_none()
-                                {
-                                    return Err(TypeError::WrongArgumentCount {
-                                        expected: 1,
-                                        found: data.as_ref().map_or(0, |d| d.len()),
-                                    });
-                                }
-                                self.check_pattern(&data.as_ref().unwrap()[0], ok_ty, env)?;
-                                Ok(())
+                        "None" => {
+                            if data.is_some() {
+                                return Err(TypeError::WrongArgumentCount {
+                                    expected: 0,
+                                    found: 1,
+                                });
                             }
-                            "Err" => {
-                                if data.as_ref().map_or(false, |d| d.len() != 1)
-                                    || data.is_none()
-                                {
-                                    return Err(TypeError::WrongArgumentCount {
-                                        expected: 1,
-                                        found: data.as_ref().map_or(0, |d| d.len()),
-                                    });
-                                }
-                                self.check_pattern(&data.as_ref().unwrap()[0], err_ty, env)?;
-                                Ok(())
-                            }
-                            _ => Err(TypeError::UndefinedVariable(format!(
-                                "Result::{}",
-                                variant
-                            ))),
+                            Ok(())
                         }
-                    }
+                        _ => Err(TypeError::UndefinedVariable(format!("Option::{}", variant))),
+                    },
+                    Type::Result(ok_ty, err_ty) => match variant.as_str() {
+                        "Ok" => {
+                            let Some([pattern]) = data.as_deref() else {
+                                return Err(TypeError::WrongArgumentCount {
+                                    expected: 1,
+                                    found: data.as_ref().map_or(0, |d| d.len()),
+                                });
+                            };
+                            self.check_pattern(pattern, ok_ty, env)?;
+                            Ok(())
+                        }
+                        "Err" => {
+                            let Some([pattern]) = data.as_deref() else {
+                                return Err(TypeError::WrongArgumentCount {
+                                    expected: 1,
+                                    found: data.as_ref().map_or(0, |d| d.len()),
+                                });
+                            };
+                            self.check_pattern(pattern, err_ty, env)?;
+                            Ok(())
+                        }
+                        _ => Err(TypeError::UndefinedVariable(format!("Result::{}", variant))),
+                    },
                     Type::Custom(type_name) => {
                         let type_def = env.get_type(type_name).cloned();
                         if let Some(TypeDefinition::Enum { variants }) = type_def {
@@ -1959,7 +2496,8 @@ impl TypeChecker {
                                                 });
                                             }
                                             // Recursively check each data pattern
-                                            for (dp, dt) in data_patterns.iter().zip(expected_data) {
+                                            for (dp, dt) in data_patterns.iter().zip(expected_data)
+                                            {
                                                 self.check_pattern(dp, dt, env)?;
                                             }
                                         }
@@ -1992,10 +2530,10 @@ impl TypeChecker {
     }
 
     /// Resulting type of an `if` expression from its two branches. Both branches
-/// must evaluate to a value of a common type (matching the codegen, which can
-/// only produce a value when both branches yield one); an integer literal
-/// branch promotes to the other numeric branch (`if c { 1 } else { 2.5 }` is
-/// Float64).
+    /// must evaluate to a value of a common type (matching the codegen, which can
+    /// only produce a value when both branches yield one); an integer literal
+    /// branch promotes to the other numeric branch (`if c { 1 } else { 2.5 }` is
+    /// Float64).
     fn common_if_type(
         &mut self,
         then_branch: &Expr,
@@ -2033,7 +2571,10 @@ impl TypeChecker {
 
         // A value if/else can only carry a scalar result: the codegen has no
         // value-producing form for heap-typed branches.
-        if !matches!(result, Type::Int64 | Type::UInt64 | Type::Float64 | Type::Bool) {
+        if !matches!(
+            result,
+            Type::Int64 | Type::UInt64 | Type::Float64 | Type::Bool
+        ) {
             return Err(TypeError::TypeMismatch {
                 expected: "Int64, UInt64, Float64 or Bool".to_string(),
                 found: format!("{}", result),
@@ -2658,7 +3199,7 @@ mod tests {
         assert!(checker.check_program(&program).is_err());
     }
 
-        #[test]
+    #[test]
     fn test_type_check_list_slice() {
         let input = "\
 @fn main() -> Void {
@@ -2870,7 +3411,8 @@ mod tests {
     }
 
     #[test]
-    fn test_type_check_impl_method_bad_args() {        let input = "\
+    fn test_type_check_impl_method_bad_args() {
+        let input = "\
 @struct Point { x: Float64, y: Float64 }
 @impl Point {
     @fn norm(p: Point) -> Float64 { return p.x; }

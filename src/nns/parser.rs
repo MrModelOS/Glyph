@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Recursive-descent parser — port of `ns/parser/parser.cpp`.
 
 use super::ast::{
@@ -81,7 +82,10 @@ impl Parser {
     }
 
     fn error(&self, token: &Token, msg: &str) -> NsError {
-        NsError(format!("Parse error at {}:{}: {}", token.line, token.column, msg))
+        NsError(format!(
+            "Parse error at {}:{}: {}",
+            token.line, token.column, msg
+        ))
     }
 
     fn at_end(&self) -> bool {
@@ -280,14 +284,14 @@ impl Parser {
                 stmt.methods.push(Box::new(sub));
             } else if self.check(TokenType::KwLayer) {
                 self.advance();
-                stmt.layers.push(Box::new(self.parse_layer_decl(self.previous().clone())?));
-            } else if self.check(TokenType::KwForward) {
-                stmt.methods.push(Box::new(self.parse_statement()?));
-            } else if self.check(TokenType::KwTrain) {
+                stmt.layers
+                    .push(Box::new(self.parse_layer_decl(self.previous().clone())?));
+            } else if self.check(TokenType::KwForward) || self.check(TokenType::KwTrain) {
                 stmt.methods.push(Box::new(self.parse_statement()?));
             } else if self.check(TokenType::KwType) {
                 self.advance();
-                stmt.methods.push(Box::new(self.parse_type_decl(self.previous().clone())?));
+                stmt.methods
+                    .push(Box::new(self.parse_type_decl(self.previous().clone())?));
             } else {
                 // treat as general statement
                 stmt.methods.push(Box::new(self.parse_statement()?));
@@ -307,7 +311,10 @@ impl Parser {
 
         self.expect(TokenType::OpAssign, "expected '=' after layer name")?;
 
-        let layer_type = self.expect(TokenType::Identifier, "Expected layer type (Dense, Dropout, etc.)")?;
+        let layer_type = self.expect(
+            TokenType::Identifier,
+            "Expected layer type (Dense, Dropout, etc.)",
+        )?;
         stmt.layer_type = layer_type.value;
 
         if self.match_(TokenType::OpLparen) {
@@ -474,7 +481,12 @@ impl Parser {
 
     fn parse_comparison(&mut self) -> NsResult<Expr> {
         let mut left = self.parse_additive()?;
-        while self.match_one_of(&[TokenType::OpLt, TokenType::OpGt, TokenType::OpLte, TokenType::OpGte]) {
+        while self.match_one_of(&[
+            TokenType::OpLt,
+            TokenType::OpGt,
+            TokenType::OpLte,
+            TokenType::OpGte,
+        ]) {
             let mut expr = Expr::new(ExprKind::BinaryOp, self.previous().clone());
             expr.left = Some(Box::new(left));
             expr.right = Some(Box::new(self.parse_additive()?));
@@ -702,12 +714,16 @@ impl Parser {
                 }
             } else if self.check(TokenType::IntLiteral) {
                 let t = self.advance();
-                let v: i64 = t.value.parse().map_err(|_| {
-                    NsError(format!("Invalid dimension literal '{}'", t.value))
-                })?;
+                let v: i64 = t
+                    .value
+                    .parse()
+                    .map_err(|_| NsError(format!("Invalid dimension literal '{}'", t.value)))?;
                 dims.push(DimExpr::constant(v));
             } else {
-                return Err(self.error(self.peek(), "Expected dimension (constant, identifier, or Dynamic)"));
+                return Err(self.error(
+                    self.peek(),
+                    "Expected dimension (constant, identifier, or Dynamic)",
+                ));
             }
             if !self.match_(TokenType::OpComma) {
                 break;

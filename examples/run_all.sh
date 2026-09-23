@@ -10,6 +10,8 @@ if [ ! -x "${GLYPHC}" ]; then
     echo "or point GLYPHC at the build output (e.g. target/release/glyphc)." >&2
     exit 2
 fi
+# Resolve once so the script can safely cd into examples/tests below.
+GLYPHC="$(cd "$(dirname "${GLYPHC}")" && pwd)/$(basename "${GLYPHC}")"
 
 pass=0
 fail=0
@@ -29,7 +31,20 @@ run_one() {
 for f in *.glyph; do
     run_one "$f"
 done
-run_one "project/src/main.glyph"
+run_one "tests/src/main.glyph"
+
+if test_output=$(cd tests && "${GLYPHC}" test 2>&1); then
+    printf 'OK   tests/ @test suite\n'
+    pass=$((pass + 1))
+elif printf '%s\n' "$test_output" | grep -q 'test_fail' && printf '%s\n' "$test_output" | grep -q '1 failed'; then
+    # calc.glyph intentionally contains one negative test; the rest must pass.
+    printf 'OK   tests/ @test suite (expected negative test)\n'
+    pass=$((pass + 1))
+else
+    printf 'FAIL tests/ @test suite\n%s\n' "$test_output"
+    failed+=("tests/ @test suite")
+    fail=$((fail + 1))
+fi
 
 printf '\nResult: %d passed, %d failed\n' "$pass" "$fail"
 if [ "${#failed[@]}" -gt 0 ]; then

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Kernel fusion pass — port of `ns/mlir/fusion.cpp`.
 //!
 //! Groups elementwise epilogues (activations, layer-norm) onto their
@@ -18,8 +19,8 @@ pub enum FusionKind {
 
 #[derive(Debug, Clone)]
 pub struct FuseDecision {
-    pub start: usize,      // index of the leader (MATMUL)
-    pub end: usize,        // index of the last fused op (exclusive)
+    pub start: usize, // index of the leader (MATMUL)
+    pub end: usize,   // index of the last fused op (exclusive)
     pub kind: FusionKind,
     pub leader_result: String, // GEMM result id
     pub fuse_result: String,   // final result id of the fused run
@@ -161,8 +162,7 @@ impl FusionPass {
         let mut fused_groups = 0usize;
 
         for fn_ in module.functions.iter_mut() {
-            let mut out: Vec<MLIRInstr> = Vec::new();
-            out.reserve(fn_.instructions.len());
+            let mut out: Vec<MLIRInstr> = Vec::with_capacity(fn_.instructions.len());
             // Redirect any later consumer of an internal (fused-away) value.
             let mut redirect: HashMap<String, String> = HashMap::new();
             let mut fuse_of: HashMap<String, String> = HashMap::new();
@@ -176,10 +176,12 @@ impl FusionPass {
                     let d = Self::try_fuse(fn_, i);
                     if d.end > d.start {
                         // Build the fused group descriptor.
-                        let mut group = FusedopGroup::default();
-                        group.result_id = d.fuse_result.clone();
-                        group.c = d.leader_result.clone();
-                        group.result_type = fn_.instructions[d.end - 1].result_type.clone();
+                        let mut group = FusedopGroup {
+                            result_id: d.fuse_result.clone(),
+                            c: d.leader_result.clone(),
+                            result_type: fn_.instructions[d.end - 1].result_type.clone(),
+                            ..FusedopGroup::default()
+                        };
 
                         for j in (d.start + 1)..d.end {
                             let ep = fn_.instructions[j].clone();
@@ -207,9 +209,13 @@ impl FusionPass {
 
                         // Emit a single FUSED instruction.
                         let mut fused = MLIRInstr::new(MLIROp::Fused, d.fuse_result.clone());
-                        fused.operands = instr.operands.clone(); // A, B from the MATMUL leader
-                        for g in module.fused_groups.last().unwrap().epilogue_operands.iter() {
-                            fused.operands.push(g.clone());
+                        // A and B come from the MATMUL leader.
+                        fused.operands = instr.operands.clone();
+                        // Invariant: this group's descriptor was pushed immediately above.
+                        if let Some(group) = module.fused_groups.last() {
+                            for operand in &group.epilogue_operands {
+                                fused.operands.push(operand.clone());
+                            }
                         }
                         fused.result_type = fn_.instructions[d.end - 1].result_type.clone();
                         fused.comment = format!("fused {} ops", d.end - d.start);

@@ -1,11 +1,13 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! CUDA backend layer: device source snippets spliced into emitted
 //! `.cu` units, ported 1:1 from `NeuralScript/src/codegen/cuda_backend.cpp`.
 
 // FP16 support header: included when CodegenOptions::enable_fp16 is true.
 // Defines NS_DTYPE as __half and enables half2 vectorization comment for
 // NS_LAUNCH_BLOCKS tuning. Used by gen_cuda when fp16 is enabled.
-pub const CUDA_FP16_HEADER: &str = "#include <cuda_fp16.h>\n#define NS_DTYPE __half\n#define NS_FP16 1\n// fp16: using half2\n";
+pub const CUDA_FP16_HEADER: &str =
+    "#include <cuda_fp16.h>\n#define NS_DTYPE __half\n#define NS_FP16 1\n// fp16: using half2\n";
 
 // ROCm/HIP header placeholder: hipified CUDA. Emitted by gen_rocm to make
 // the output distinguishable from pure CUDA.
@@ -848,14 +850,28 @@ static int ns_cu_reserve_u8(uint8_t** pp, size_t* pc, size_t bytes, int zero) {
 pub fn device_helpers_source() -> String {
     format!("{}{}", K_LAUNCH_MACROS, K_DEVICE_HELPERS)
 }
-pub fn forward_kernels_source() -> &'static str { K_FORWARD_KERNELS }
-pub fn train_kernels_source() -> &'static str { K_TRAIN_KERNELS }
-pub fn runtime_utils_source() -> &'static str { K_RUNTIME_UTILS }
-pub fn runtime_utils_u8_source() -> &'static str { K_RUNTIME_UTILS_U8 }
+pub fn forward_kernels_source() -> &'static str {
+    K_FORWARD_KERNELS
+}
+pub fn train_kernels_source() -> &'static str {
+    K_TRAIN_KERNELS
+}
+pub fn runtime_utils_source() -> &'static str {
+    K_RUNTIME_UTILS
+}
+pub fn runtime_utils_u8_source() -> &'static str {
+    K_RUNTIME_UTILS_U8
+}
 
 /// Return the fp16 header snippet (conditional include for half precision).
-pub fn fp16_header_source() -> &'static str { CUDA_FP16_HEADER }
+pub fn fp16_header_source() -> &'static str {
+    CUDA_FP16_HEADER
+}
 /// Return the ROCm header snippet.
-pub fn rocm_header_source() -> &'static str { ROCM_HEADER }
+pub fn rocm_header_source() -> &'static str {
+    ROCM_HEADER
+}
 /// Return the Metal header snippet.
-pub fn metal_header_source() -> &'static str { METAL_HEADER }
+pub fn metal_header_source() -> &'static str {
+    METAL_HEADER
+}

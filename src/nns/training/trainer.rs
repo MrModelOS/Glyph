@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Numeric training driver — port of `ns/training/trainer.cpp`.
 //!
 //! Executes the *unfused* MLIR forward graph of a network with a reverse-mode
@@ -240,7 +241,9 @@ impl<'a> NumericTrainer<'a> {
                 "sigmoid" => *v = 1.0 / (1.0 + (-*v).exp()),
                 "tanh" => *v = v.tanh(),
                 "swish" => *v = *v / (1.0 + (-*v).exp()),
-                "gelu" => *v = 0.5 * *v * (1.0 + super::super::mlir::eval::libm_erf(*v / 2f64.sqrt())),
+                "gelu" => {
+                    *v = 0.5 * *v * (1.0 + super::super::mlir::eval::libm_erf(*v / 2f64.sqrt()))
+                }
                 "silu" => *v = *v / (1.0 + (-*v).exp()),
                 _ => {}
             }
@@ -274,7 +277,13 @@ impl<'a> NumericTrainer<'a> {
                 "+" => av + bv,
                 "-" => av - bv,
                 "*" => av * bv,
-                "/" => if bv == 0.0 { 0.0 } else { av / bv },
+                "/" => {
+                    if bv == 0.0 {
+                        0.0
+                    } else {
+                        av / bv
+                    }
+                }
                 _ => *av,
             };
         }
@@ -288,11 +297,7 @@ impl<'a> NumericTrainer<'a> {
         }
         let input = &r.ins[0];
         let mut out = input.clone();
-        let last = if input.shape.is_empty() {
-            1
-        } else {
-            *input.shape.last().unwrap()
-        };
+        let last = input.shape.last().copied().unwrap_or(1);
         if last <= 0 {
             return true;
         }
@@ -325,11 +330,7 @@ impl<'a> NumericTrainer<'a> {
         }
         let input = &r.ins[0];
         let mut out = input.clone();
-        let last = if input.shape.is_empty() {
-            1
-        } else {
-            *input.shape.last().unwrap()
-        };
+        let last = input.shape.last().copied().unwrap_or(1);
         if last <= 0 {
             return true;
         }
@@ -565,11 +566,7 @@ impl<'a> NumericTrainer<'a> {
         }
         let input = &r.ins[0];
         let mut ga = r.out.clone();
-        let last = if r.out.shape.is_empty() {
-            1
-        } else {
-            *r.out.shape.last().unwrap()
-        };
+        let last = r.out.shape.last().copied().unwrap_or(1);
         if last <= 0 {
             return;
         }
@@ -615,11 +612,7 @@ impl<'a> NumericTrainer<'a> {
         }
         let sm = r.out.clone();
         let mut ga = g.clone();
-        let last = if sm.shape.is_empty() {
-            1
-        } else {
-            *sm.shape.last().unwrap()
-        };
+        let last = sm.shape.last().copied().unwrap_or(1);
         if last <= 0 {
             return;
         }
@@ -641,10 +634,13 @@ impl<'a> NumericTrainer<'a> {
     }
 
     fn accumulate(&mut self, id: &str, g: &TensorBuffer) {
-        let entry = self.grads.entry(id.to_string()).or_insert_with(|| TensorBuffer {
-            data: Vec::new(),
-            shape: g.shape.clone(),
-        });
+        let entry = self
+            .grads
+            .entry(id.to_string())
+            .or_insert_with(|| TensorBuffer {
+                data: Vec::new(),
+                shape: g.shape.clone(),
+            });
         if entry.data.is_empty() {
             *entry = g.clone();
             return;

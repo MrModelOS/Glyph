@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Type-system helpers — port of `ns/typechecker/type_system.cpp`.
 
 use std::collections::{HashMap, HashSet};
@@ -81,7 +82,10 @@ pub fn resolve_dim_symbolic(name: &str, aliases: &HashMap<String, DimExpr>) -> O
 ///
 /// Follows `binds_to` chains and returns a constant if the name was bound to
 /// one, otherwise returns the terminal symbolic name.
-pub fn resolve_symbolic_via_bindings(name: &str, symbols: &HashMap<String, SymbolBinding>) -> DimExpr {
+pub fn resolve_symbolic_via_bindings(
+    name: &str,
+    symbols: &HashMap<String, SymbolBinding>,
+) -> DimExpr {
     let mut cur = name.to_string();
     let mut seen: HashSet<String> = HashSet::new();
     loop {

@@ -2,10 +2,10 @@
 // and an AOT-compiled training step (train()) that shares the network weights.
 //
 // Build & inspect:
-//   ./build/nsc examples/mlp.ns --check     # static shape verification only
-//   ./build/nsc examples/mlp.ns --mlir      # dump MLIR lowering
-//   ./build/nsc examples/mlp.ns --cuda      # generate CUDA backend
-//   ./build/nsc examples/mlp.ns --cpp       # generate CPU reference backend
+//   glyphc nns examples/nns/mlp.ns --check     # static shape verification only
+//   glyphc nns examples/nns/mlp.ns --mlir      # dump MLIR lowering
+//   glyphc nns examples/nns/mlp.ns --cuda      # generate CUDA backend
+//   glyphc nns examples/nns/mlp.ns --cpp       # generate CPU reference backend
 
 // ---- Type aliases: symbolic + constant dimensions ----
 type Batch    = Dynamic     // symbolic batch dim, resolved at runtime entry

@@ -1,0 +1,10 @@
+target/
+.git/
+rust-toolchain.toml
+.github/
+examples/
+bench/
+docs/
+*.md
+!README.md
+!LICENSE

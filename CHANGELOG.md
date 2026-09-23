@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Public-release preparation
+
+- Added `glyphc new`/`init`, a release installer, Dockerfile, and reproducible
+  `cargo fmt`/Clippy/docs CI checks.
+- Added English language/NNS/editor/comparison documentation, issue templates,
+  contribution/security policies, Dependabot, and cross-platform release archives.
+- Made `nns` output/errors robust, added `-o` and an explicit CPU SIMD target,
+  `lsp` as a real subcommand, and rejected unsupported fp8/fp4/float16 code
+  generation instead of emitting misleading types.
+- Fixed `glyphc run`/`test` temporary-directory collisions and made the example
+  suite self-consistent after the NeuralScript merge.
+- Corrected the transformer example to use token IDs (`Tensor[Seq]`) consistently
+  with its Embedding layer; all shipped NNS examples now pass strict CI checks.
+- Made generic and constant C emission deterministic across runs and added a
+  regression test for reproducible output.
+
 ## [2.1.0] — 2026-09-22
 
 ### NeuralScript (nns) merged
@@ -7,7 +25,7 @@
 - Ported NeuralScript C++ implementation to Rust with byte-identical codegen.
 - Merged into `glyphc` as `glyphc nns` — single binary, no separate toolchain.
 - Backends: `--cpp` and `--cuda` with `--runtime` header emission; `--check` for typecheck-only.
-- Examples: `glyphc nns examples/mlp.ns --cpp --runtime | gcc -x c - -o a.out && ./a.out`, `glyphc nns file.ns --cuda --runtime`, `glyphc nns file.ns --check`.
+- Examples: `glyphc nns examples/nns/mlp.ns --cpp --runtime | gcc -x c - -o a.out && ./a.out`, `glyphc nns file.ns --cuda --runtime`, `glyphc nns file.ns --check`.
 
 ## [2.0.0] — 2026-09-10
 

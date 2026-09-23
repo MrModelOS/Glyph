@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Canonical optimizer hyperparameters — port of `ns/optim/optim_params.hpp`.
 //!
 //! SINGLE source of truth for the generated AOT training cores (CPU and CUDA
@@ -26,7 +27,7 @@ pub const K_ONE_MINUS_BETA2: f32 = 0.001;
 /// Learning-rate schedules (compiled into the AOT runtime driver).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LRSchedule {
-    Constant = 0,        // multiplier always 1.0
+    Constant = 0,         // multiplier always 1.0
     CosineWithWarmup = 1, // linear warmup then cosine decay to kLrMinFactor
 }
 

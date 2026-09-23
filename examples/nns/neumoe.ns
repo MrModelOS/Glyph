@@ -5,7 +5,7 @@
 //   position-aware) -> 7 x TransformerBlock -> MoE block (attn + base FFN
 //   in parallel with an FFN-MoE of k_max expert slots) -> LN_f -> head.
 //
-// v1.3 constraints honored:
+// Current implementation constraints honored:
 //   * one MoE layer per model (capacity 9, initial live count 1).
 //   * "birth by schedule" lifecycle: ns_expert_birth() from the host driver
 //     grows 1 -> 9 (real router/entropy-driven spawns are not observable by
@@ -14,7 +14,7 @@
 //     layer holds the gate + per-expert FFN only. bf1/bf2 are plain Dense
 //     layers sharing the same input z as the MoE (reverse mode accumulates
 //     gradients through the elementwise "+").
-//   * the v1.3 Attention scale is D^-0.5 (not hd^-0.5 like the torch ref);
+//   * the Attention scale is D^-0.5 (not hd^-0.5 like the torch ref);
 //     the small task-per-step batch (B=1) bounds attention-scratch memory.
 //
 // Weight blob (concatenated, in this order):

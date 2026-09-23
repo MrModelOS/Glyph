@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Muon + AdamW optimizer reference — port of `ns/optim/muon.cpp`.
 //!
 //! Muon: for 2D weight matrices, run SGD-style momentum on the gradient, then
@@ -212,7 +213,7 @@ impl NewtonSchulz {
 
 #[derive(Debug, Clone)]
 pub struct MuonParams {
-    pub lr: f64,                 // base learning rate
+    pub lr: f64, // base learning rate
     pub weight_decay: f64,
     pub muon_momentum: f64,
     pub adam_beta1: f64,
@@ -272,14 +273,22 @@ impl MuonOptimizer {
 
     pub fn add_param(&mut self, data: Vec<f64>, rows: usize, cols: usize) {
         let n = rows * cols;
-        let mut st = MuonState::default();
-        st.is_matrix = rows > 1 && cols > 1;
-        st.muon_m = vec![0.0; n];
-        if !st.is_matrix {
+        let is_matrix = rows > 1 && cols > 1;
+        let mut st = MuonState {
+            is_matrix,
+            muon_m: vec![0.0; n],
+            ..MuonState::default()
+        };
+        if !is_matrix {
             st.adam_m = vec![0.0; n];
             st.adam_v = vec![0.0; n];
         }
-        self.params.push(ParamSlot { data, rows, cols, n });
+        self.params.push(ParamSlot {
+            data,
+            rows,
+            cols,
+            n,
+        });
         self.states.push(st);
     }
 
@@ -298,13 +307,20 @@ impl MuonOptimizer {
         }
         let n = self.params[index].n;
         let t = self.step + 1; // 1-based step for bias correction
+        assert!(
+            grad.len() >= n,
+            "gradient length {} is smaller than parameter length {}",
+            grad.len(),
+            n
+        );
 
         let is_matrix = self.states[index].is_matrix;
         if is_matrix {
             // --- Muon path ---
             let momentum = self.p.muon_momentum;
-            for i in 0..n {
-                self.states[index].muon_m[i] = momentum * self.states[index].muon_m[i] + grad[i];
+            let state = &mut self.states[index];
+            for (m, &g) in state.muon_m.iter_mut().zip(grad.iter()) {
+                *m = momentum * *m + g;
             }
             let (rows, cols) = (self.params[index].rows, self.params[index].cols);
             let mdata: &mut [f64] = &mut self.states[index].muon_m;
@@ -313,9 +329,13 @@ impl MuonOptimizer {
             let rank = (self.params[index].rows.min(self.params[index].cols) as f64).sqrt();
             let lr_eff = self.p.lr * rank;
             let wd = self.p.weight_decay;
-            for i in 0..n {
-                let decay = wd * self.params[index].data[i];
-                self.params[index].data[i] -= lr_eff * self.states[index].muon_m[i] + decay;
+            {
+                let state = &mut self.states[index];
+                let data = &mut self.params[index].data;
+                for (m, value) in state.muon_m.iter_mut().zip(data.iter_mut()) {
+                    let decay = wd * *value;
+                    *value -= lr_eff * *m + decay;
+                }
             }
             // reset momentum after apply
             self.states[index].muon_m.fill(0.0);
@@ -323,16 +343,21 @@ impl MuonOptimizer {
             // --- AdamW path (bias / vector / scalar) ---
             let (b1, b2) = (self.p.adam_beta1, self.p.adam_beta2);
             let t_f = t as f64;
-            for i in 0..n {
-                let g = grad[i];
-                self.states[index].adam_m[i] = b1 * self.states[index].adam_m[i] + (1.0 - b1) * g;
-                self.states[index].adam_v[i] =
-                    b2 * self.states[index].adam_v[i] + (1.0 - b2) * g * g;
-                let mhat = self.states[index].adam_m[i] / (1.0 - b1.powf(t_f));
-                let vhat = self.states[index].adam_v[i] / (1.0 - b2.powf(t_f));
+            let state = &mut self.states[index];
+            let data = &mut self.params[index].data;
+            for ((m, v), (&g, value)) in state
+                .adam_m
+                .iter_mut()
+                .zip(state.adam_v.iter_mut())
+                .zip(grad.iter().zip(data.iter_mut()))
+            {
+                *m = b1 * *m + (1.0 - b1) * g;
+                *v = b2 * *v + (1.0 - b2) * g * g;
+                let mhat = *m / (1.0 - b1.powf(t_f));
+                let vhat = *v / (1.0 - b2.powf(t_f));
                 let step_sz = self.p.lr / (vhat.sqrt() + self.p.adam_eps);
-                let decay = self.p.weight_decay * self.params[index].data[i];
-                self.params[index].data[i] -= mhat * step_sz + decay;
+                let decay = self.p.weight_decay * *value;
+                *value -= mhat * step_sz + decay;
             }
         }
     }

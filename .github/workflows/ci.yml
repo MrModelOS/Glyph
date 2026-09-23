@@ -18,23 +18,42 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Docs
+        run: cargo doc --no-deps
 
       - name: Build
         run: cargo build --locked
 
-      - name: Unit tests
+      - name: Unit and integration tests
         run: cargo test --locked
 
       - name: Examples (glyphc run on every example)
-        run: |
-          cd examples
-          ./run_all.sh
+        run: ./examples/run_all.sh
 
       - name: Release build
         run: cargo build --locked --release
 
-  nns-diff:
-    name: NNS smoke tests (glyphc self-consistency)
+      - name: Upload glyphc binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: glyphc-bin
+          path: target/debug/glyphc
+          if-no-files-found: error
+
+  nns-smoke:
+    name: NNS pipeline smoke tests
     runs-on: ubuntu-latest
     needs: build-and-test
     steps:
@@ -42,343 +61,109 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
-      - name: Build glyphc
-        run: cargo build --bin glyphc --locked
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
-      - name: Install build dependencies (gcc for smoke compile)
+      - name: Restore glyphc binary
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: glyphc-bin
+          path: target/debug
+
+      - name: Build glyphc if artifact is unavailable
+        run: |
+          if [ ! -x target/debug/glyphc ]; then
+            cargo build --bin glyphc --locked
+          fi
+          test -x target/debug/glyphc
+
+      - name: Install C++ smoke-test compiler
         run: sudo apt-get update && sudo apt-get install -y build-essential
 
-      - name: Resolve NNS examples (no external repo)
+      - name: Run NNS examples through the complete pipeline
+        shell: bash
         run: |
           set -euo pipefail
+          GLYPHC=target/debug/glyphc
           shopt -s nullglob
-          EXAMPLES=(examples/nns/*.ns examples/nns/neumoe/*.ns glyphc/examples/nns/*.ns glyphc/examples/nns/neumoe/*.ns)
-          # Deduplicate (in case both patterns match same files via symlink)
-          if [ ${#EXAMPLES[@]} -gt 0 ]; then
-            # Use associative array to dedup
-            declare -A seen
-            DEDUP=()
-            for f in "${EXAMPLES[@]}"; do
-              if [ -z "${seen[$f]+x}" ]; then
-                seen["$f"]=1
-                DEDUP+=("$f")
-              fi
-            done
-            EXAMPLES=("${DEDUP[@]}")
-          fi
-          echo "Found ${#EXAMPLES[@]} examples:"
-          printf '  %s\n' "${EXAMPLES[@]}" 2>&1 || true
-          if [ ${#EXAMPLES[@]} -eq 0 ]; then
-            echo "No .ns examples found for patterns examples/nns/*.ns etc."
-            echo "--- find diagnostic ---"
-            find . -name "*.ns" 2>&1 | head -n 100 || true
-            ls -R . 2>&1 | head -n 200 || true
-            echo "ERROR: no .ns examples found — harness cannot run"
+          EXAMPLES=(examples/nns/*.ns examples/nns/neumoe/*.ns)
+          if [ "${#EXAMPLES[@]}" -eq 0 ]; then
+            echo "No .ns examples found under examples/nns/"
+            find examples -name '*.ns' -print
             exit 1
           fi
-          # Persist for next steps via GITHUB_ENV
-          printf 'NNS_EXAMPLES=%s\n' "$(printf '%s:' "${EXAMPLES[@]}")" >> "$GITHUB_ENV"
-          echo "NNS_EXAMPLES=${EXAMPLES[*]}"
+          printf 'Testing %d NNS examples\n' "${#EXAMPLES[@]}"
+          failures=0
 
-      - name: NNS smoke harness (--check / --cpp / --cuda / --runtime / --mlir)
-        run: |
-          set -euo pipefail
-          GLYPHC="target/debug/glyphc"
-          if [ ! -x "$GLYPHC" ]; then
-            echo "glyphc binary not found at $GLYPHC, trying cargo run fallback"
-            GLYPHC="cargo run --quiet --bin glyphc --"
-          else
-            echo "Using GLYPHC=$GLYPHC"
-            ls -lh "$GLYPHC"
-          fi
-
-          run_glyphc() {
-            if [[ "$GLYPHC" == cargo* ]]; then
-              $GLYPHC nns "$@"
-            else
-              "$GLYPHC" nns "$@"
+          run_case() {
+            local label="$1"
+            shift
+            local out="/tmp/glyphc-nns-${label}.out"
+            local err="/tmp/glyphc-nns-${label}.err"
+            set +e
+            "$GLYPHC" nns "$@" >"$out" 2>"$err"
+            local rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "FAIL $label (exit $rc)"
+              cat "$err"
+              failures=1
+              return 1
             fi
+            if [ ! -s "$out" ]; then
+              echo "FAIL $label (empty stdout)"
+              failures=1
+              return 1
+            fi
+            return 0
           }
 
-          shopt -s nullglob
-          EXAMPLES=(examples/nns/*.ns examples/nns/neumoe/*.ns glyphc/examples/nns/*.ns glyphc/examples/nns/neumoe/*.ns)
-          # dedup
-          declare -A seen
-          DEDUP=()
-          for f in "${EXAMPLES[@]}"; do
-            if [ -z "${seen[$f]+x}" ]; then
-              seen["$f"]=1
-              DEDUP+=("$f")
+          for ex in "${EXAMPLES[@]}"; do
+            name=$(basename "$ex" .ns)
+            echo "=== $name ==="
+
+            if run_case "$name-check" "$ex" --check; then
+              grep -qx 'Shape checking passed.' "/tmp/glyphc-nns-$name-check.out"
+              test ! -s "/tmp/glyphc-nns-$name-check.err"
+            fi
+
+            if run_case "$name-cpp" "$ex" --cpp; then
+              g++ -fsyntax-only -x c++ "/tmp/glyphc-nns-$name-cpp.out"
+            fi
+
+            if run_case "$name-cpp-runtime" "$ex" --cpp --runtime; then
+              grep -q 'ns_runtime_' "/tmp/glyphc-nns-$name-cpp-runtime.out"
+            fi
+
+            if run_case "$name-simd" "$ex" --simd; then
+              grep -q 'CPU SIMD backend requested' "/tmp/glyphc-nns-$name-simd.out"
+            fi
+
+            if run_case "$name-cuda" "$ex" --cuda; then
+              grep -q 'cuda_runtime.h' "/tmp/glyphc-nns-$name-cuda.out"
+            fi
+
+            if run_case "$name-cuda-runtime" "$ex" --cuda --runtime; then
+              grep -q 'ns_runtime_' "/tmp/glyphc-nns-$name-cuda-runtime.out"
+            fi
+
+            if run_case "$name-mlir" "$ex" --mlir; then
+              grep -q 'ns\.' "/tmp/glyphc-nns-$name-mlir.out"
             fi
           done
-          EXAMPLES=("${DEDUP[@]}")
-          if [ ${#EXAMPLES[@]} -eq 0 ]; then
-            echo "No .ns examples found (second check)"
-            find . -name "*.ns" 2>&1 | head -n 100
+
+          if [ "$failures" -ne 0 ]; then
+            echo 'NNS smoke tests failed.'
             exit 1
           fi
-          echo "Found ${#EXAMPLES[@]} examples:"
-          printf '  %s\n' "${EXAMPLES[@]}"
+          echo 'All NNS smoke tests passed.'
 
-          FAIL=0
-
-          echo "================ --check ================"
-          for ex in "${EXAMPLES[@]}"; do
-            echo "--- $ex --check ---"
-            set +e
-            run_glyphc "$ex" --check > /tmp/glyphc.check.stdout 2> /tmp/glyphc.check.stderr
-            RC=$?
-            set -e
-            cat /tmp/glyphc.check.stdout || true
-            cat /tmp/glyphc.check.stderr || true
-            if [ $RC -ne 0 ]; then
-              if grep -q -E "Error:|Static shape" /tmp/glyphc.check.stderr || grep -q -E "Error:|Static shape" /tmp/glyphc.check.stdout; then
-                echo "expected failure for $ex (Error: present, rc=$RC)"
-              else
-                echo "FAIL --check $ex (rc=$RC without Error:)"
-                FAIL=1
-              fi
-            else
-              echo "ok --check $ex"
-            fi
-          done
-
-          echo "================ --cpp ================"
-          for ex in "${EXAMPLES[@]}"; do
-            echo "--- $ex --cpp ---"
-            set +e
-            run_glyphc "$ex" --cpp > /tmp/out.cpp 2> /tmp/glyphc.stderr
-            RC=$?
-            set -e
-            if [ $RC -ne 0 ]; then
-              cat /tmp/glyphc.stderr || true
-              if grep -q -E "Error:|Static shape" /tmp/glyphc.stderr; then
-                echo "expected backend failure for $ex (shape error, rc=$RC)"
-                continue
-              fi
-              echo "FAIL --cpp $ex (rc=$RC)"
-              FAIL=1
-              continue
-            fi
-            if [ ! -s /tmp/out.cpp ]; then
-              echo "FAIL --cpp $ex produced empty output"
-              cat /tmp/glyphc.stderr || true
-              FAIL=1
-              continue
-            fi
-            echo "generated /tmp/out.cpp $(wc -c < /tmp/out.cpp) bytes"
-            # smoke compile with gcc (syntax check, no need to link)
-            if command -v gcc >/dev/null 2>&1; then
-              if ! gcc -c -x c++ /tmp/out.cpp -o /tmp/out.o 2> /tmp/gcc.stderr; then
-                echo "WARN gcc compile failed for $ex (non-fatal, checking cpp syntax):"
-                cat /tmp/gcc.stderr || true
-                # Do not fail hard on gcc warnings, but ensure file looks like C++
-                if ! grep -q "#include" /tmp/out.cpp; then
-                  echo "FAIL --cpp output missing #include for $ex"
-                  FAIL=1
-                fi
-              else
-                echo "gcc -c ok for $ex"
-              fi
-            else
-              echo "gcc not available, skipping compile smoke"
-            fi
-          done
-
-          echo "================ --cpp --runtime ================"
-          for ex in "${EXAMPLES[@]}"; do
-            echo "--- $ex --cpp --runtime ---"
-            set +e
-            run_glyphc "$ex" --cpp --runtime > /tmp/out.cpp 2> /tmp/glyphc.stderr
-            RC=$?
-            set -e
-            if [ $RC -ne 0 ]; then
-              cat /tmp/glyphc.stderr || true
-              if grep -q -E "Error:|Static shape" /tmp/glyphc.stderr; then
-                echo "expected backend failure for $ex (shape error, rc=$RC)"
-                continue
-              fi
-              echo "FAIL --cpp --runtime $ex (rc=$RC)"
-              FAIL=1
-              continue
-            fi
-            if [ ! -s /tmp/out.cpp ]; then
-              echo "FAIL --cpp --runtime $ex produced empty output"
-              FAIL=1
-              continue
-            fi
-            echo "generated $(wc -c < /tmp/out.cpp) bytes"
-            if ! grep -q "ns_" /tmp/out.cpp; then
-              echo "WARN --cpp --runtime output missing ns_ symbols for $ex"
-            fi
-          done
-
-          echo "================ --cuda ================"
-          for ex in "${EXAMPLES[@]}"; do
-            echo "--- $ex --cuda ---"
-            set +e
-            run_glyphc "$ex" --cuda > /tmp/out.cu 2> /tmp/glyphc.stderr
-            RC=$?
-            set -e
-            if [ $RC -ne 0 ]; then
-              cat /tmp/glyphc.stderr || true
-              if grep -q -E "Error:|Static shape" /tmp/glyphc.stderr; then
-                echo "expected backend failure for $ex (shape error, rc=$RC)"
-                continue
-              fi
-              echo "FAIL --cuda $ex (rc=$RC)"
-              FAIL=1
-              continue
-            fi
-            if [ ! -s /tmp/out.cu ]; then
-              echo "FAIL --cuda $ex produced empty output"
-              FAIL=1
-              continue
-            fi
-            echo "generated $(wc -c < /tmp/out.cu) bytes"
-          done
-
-          echo "================ --cuda --runtime ================"
-          for ex in "${EXAMPLES[@]}"; do
-            echo "--- $ex --cuda --runtime ---"
-            set +e
-            run_glyphc "$ex" --cuda --runtime > /tmp/out.cu 2> /tmp/glyphc.stderr
-            RC=$?
-            set -e
-            if [ $RC -ne 0 ]; then
-              cat /tmp/glyphc.stderr || true
-              if grep -q -E "Error:|Static shape" /tmp/glyphc.stderr; then
-                echo "expected backend failure for $ex (shape error, rc=$RC)"
-                continue
-              fi
-              echo "FAIL --cuda --runtime $ex (rc=$RC)"
-              FAIL=1
-              continue
-            fi
-            if [ ! -s /tmp/out.cu ]; then
-              echo "FAIL --cuda --runtime $ex produced empty output"
-              FAIL=1
-              continue
-            fi
-            echo "generated $(wc -c < /tmp/out.cu) bytes"
-          done
-
-          echo "================ --mlir ================"
-          for ex in "${EXAMPLES[@]}"; do
-            echo "--- $ex --mlir ---"
-            set +e
-            run_glyphc "$ex" --mlir > /tmp/out.mlir 2> /tmp/glyphc.stderr
-            RC=$?
-            set -e
-            if [ $RC -ne 0 ]; then
-              cat /tmp/glyphc.stderr || true
-              if grep -q -E "Error:|Static shape" /tmp/glyphc.stderr; then
-                echo "expected backend failure for $ex (shape error, rc=$RC)"
-                continue
-              fi
-              echo "FAIL --mlir $ex (rc=$RC)"
-              FAIL=1
-              continue
-            fi
-            if [ ! -s /tmp/out.mlir ]; then
-              echo "FAIL --mlir $ex produced empty output"
-              FAIL=1
-              continue
-            fi
-            echo "generated $(wc -c < /tmp/out.mlir) bytes"
-            if ! grep -q "ns\." /tmp/out.mlir; then
-              echo "WARN --mlir output missing ns. dialect for $ex"
-            fi
-          done
-
-          if [ "$FAIL" -ne 0 ]; then
-            echo "NNS smoke harness FAILED"
-            exit 1
-          fi
-          echo "All NNS smoke checks passed."
-
-      - name: Try fetch nsc reference (optional diff, non-fatal)
-        continue-on-error: true
+      - name: NNS reference policy
         run: |
-          set -euo pipefail
-          NSC_URL="https://github.com/MrModelOS/Glyph/releases/download/nsc-linux-x64/nsc"
-          NSC="build/nsc"
-          mkdir -p build
-          echo "Attempting to download nsc from $NSC_URL ..."
-          if curl -fsSL --retry 2 --connect-timeout 10 "$NSC_URL" -o "$NSC" 2> /tmp/curl.stderr; then
-            chmod +x "$NSC"
-            echo "Downloaded nsc to $NSC"
-            ls -lh "$NSC"
-          else
-            echo "WARN: could not download nsc from releases (expected if not published yet)"
-            cat /tmp/curl.stderr || true
-            # Fallback: try local build if NeuralScript dir exists
-            if [ -d "NeuralScript" ]; then
-              echo "NeuralScript dir exists, attempting cmake build..."
-              if command -v cmake >/dev/null 2>&1; then
-                cmake -S NeuralScript -B NeuralScript/build -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -n 20 || true
-                cmake --build NeuralScript/build --target nsc --parallel 2>&1 | tail -n 20 || true
-                NSC_FOUND=$(find NeuralScript/build -type f -name nsc 2>/dev/null | head -n1 || true)
-                if [ -n "$NSC_FOUND" ] && [ -f "$NSC_FOUND" ]; then
-                  cp -v "$NSC_FOUND" "$NSC" || true
-                  chmod +x "$NSC" || true
-                  echo "Built nsc from NeuralScript at $NSC"
-                  ls -lh "$NSC" || true
-                else
-                  echo "WARN: cmake build did not produce nsc"
-                fi
-              else
-                echo "cmake not available, skipping build"
-              fi
-            else
-              echo "No NeuralScript dir and no download — skipping nsc diff (CI stays green)"
-            fi
-          fi
-
-          # If we now have an nsc, run a quick diff vs glyphc on one example (optional)
-          if [ -x "$NSC" ]; then
-            echo "nsc found, running optional diff on first example..."
-            shopt -s nullglob
-            EXAMPLES=(examples/nns/*.ns examples/nns/neumoe/*.ns glyphc/examples/nns/*.ns glyphc/examples/nns/neumoe/*.ns)
-            # dedup
-            declare -A seen
-            DEDUP=()
-            for f in "${EXAMPLES[@]}"; do
-              if [ -z "${seen[$f]+x}" ]; then
-                seen["$f"]=1
-                DEDUP+=("$f")
-              fi
-            done
-            EXAMPLES=("${DEDUP[@]}")
-            if [ ${#EXAMPLES[@]} -gt 0 ]; then
-              ex="${EXAMPLES[0]}"
-              echo "Diffing $ex --cpp (nsc vs glyphc)..."
-              GLYPHC="target/debug/glyphc"
-              set +e
-              "$NSC" "$ex" --cpp > /tmp/nsc.cpp 2> /tmp/nsc.stderr
-              NRC=$?
-              "$GLYPHC" nns "$ex" --cpp > /tmp/glyphc.cpp 2> /tmp/glyphc.stderr
-              GRC=$?
-              set -e
-              if [ $NRC -ne 0 ]; then echo "nsc --cpp failed rc=$NRC"; cat /tmp/nsc.stderr || true; fi
-              if [ $GRC -ne 0 ]; then echo "glyphc --cpp failed rc=$GRC"; cat /tmp/glyphc.stderr || true; fi
-              if [ $NRC -eq 0 ] && [ $GRC -eq 0 ]; then
-                if diff -u /tmp/nsc.cpp /tmp/glyphc.cpp; then
-                  echo "Optional diff PASSED for $ex"
-                else
-                  echo "WARN: diff mismatch for $ex (non-fatal, informational)"
-                fi
-              fi
-            fi
-          else
-            echo "No nsc binary available — optional diff skipped (non-fatal)"
-          fi
-
-      - name: Upload nsc artifact (if present)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nsc-reference
-          path: build/nsc
-          if-no-files-found: warn
+          echo "NeuralScript was merged into glyphc; no external repository is cloned."
+          echo "The smoke job validates the self-contained Rust pipeline for every shipped example."
+          echo "A historical nsc binary can still be supplied manually for local byte-diffing."

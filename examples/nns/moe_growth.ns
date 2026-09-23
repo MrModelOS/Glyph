@@ -1,13 +1,13 @@
 // NeuralScript example: an FFN Mixture-of-Experts classifier with DYNAMIC
-// expert lifecycle, demonstrating the v1.3 MoE layer:
+// expert lifecycle, demonstrating the MoE layer:
 //
 //   Dense → MoE (FFN experts, capacity 4, only 1 alive at init) → Dense → CE
 //
 // Build & run:
-//   ./build/nsc examples/moe_growth.ns --check         # shape check
-//   ./build/nsc examples/moe_growth.ns --mlir          # MLIR dump
-//   ./build/nsc examples/moe_growth.ns --cpp --runtime # self-contained CPU driver
-//   ./build/nsc examples/moe_growth.ns --cuda --runtime # CUDA runtime driver
+//   glyphc nns examples/nns/moe_growth.ns --check         # shape check
+//   glyphc nns examples/nns/moe_growth.ns --mlir          # MLIR dump
+//   glyphc nns examples/nns/moe_growth.ns --cpp --runtime # self-contained CPU driver
+//   glyphc nns examples/nns/moe_growth.ns --cuda --runtime # CUDA runtime driver
 //
 // The MoE layer is compiled with capacity 4 but only the first expert alive:
 //   MoE(d_model: D, num_experts: 4, initial_experts: 1, ffn_dim: 4*D)

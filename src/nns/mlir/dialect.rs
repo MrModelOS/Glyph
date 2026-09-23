@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! MLIR-like IR types — port of `ns/mlir/mlir_compiler.hpp` IR section.
 //!
 //! A simplified MLIR-style IR that captures the high-level tensor graph.
@@ -36,18 +37,18 @@ pub enum MLIROp {
     Constant,
 
     // Reverse-mode (AOT backward pass) ops
-    MatmulGradA,     // dA = dC @ B^T      (operands: dC, B)
-    MatmulGradW,     // dB = A^T @ dC      (operands: A, dC, Bweight)
-    ActivationGrad,  // elementwise jacobian backward (operands: dOut, actInput)
-    LossGrad,        // loss seed: d(preds) from preds+labels (cross-entropy)
-    BinopGrad,       // elementwise binop backward (operands: dC, lhs, rhs; attribute = operator)
+    MatmulGradA,    // dA = dC @ B^T      (operands: dC, B)
+    MatmulGradW,    // dB = A^T @ dC      (operands: A, dC, Bweight)
+    ActivationGrad, // elementwise jacobian backward (operands: dOut, actInput)
+    LossGrad,       // loss seed: d(preds) from preds+labels (cross-entropy)
+    BinopGrad,      // elementwise binop backward (operands: dC, lhs, rhs; attribute = operator)
     // (int_attr = 0 for lhs grad, 1 for rhs grad)
 
     // Control flow
-    FnCall,   // function call
-    Forward,  // forward pass
-    Grad,     // gradient computation block
-    OptStep,  // optimizer step
+    FnCall,  // function call
+    Forward, // forward pass
+    Grad,    // gradient computation block
+    OptStep, // optimizer step
 
     // Layer declarations
     LayerDense,
@@ -89,9 +90,9 @@ pub enum MLIROp {
 /// consumers other than the fusion boundary.
 #[derive(Debug, Clone)]
 pub struct FusedopGroup {
-    pub result_id: String,            // final fused result value name
-    pub c: String,                    // intermediate GEMM result (usually internal)
-    pub ops: Vec<String>,             // epilogue op names: "relu","gelu","layernorm","+",...
+    pub result_id: String,              // final fused result value name
+    pub c: String,                      // intermediate GEMM result (usually internal)
+    pub ops: Vec<String>,               // epilogue op names: "relu","gelu","layernorm","+",...
     pub epilogue_operands: Vec<String>, // extra operands for binops
     pub result_type: TensorType,
     pub has_bias: bool,

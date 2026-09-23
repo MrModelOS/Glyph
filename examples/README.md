@@ -34,32 +34,22 @@ glyphc run --input examples/hello.glyph
 | `error_handling.glyph` | `#guard` + перечисление-ошибка (`DivisionResult`) |
 | `generics.glyph` | обобщённые функции: `<T>`, `<T, K>`, `Option<T>`, `Result<T, E>`, цепочки |
 | `concurrency.glyph` | `@fn async`, `spawn`/`await`, `Channel<T>`, `send`/`recv`/`close` |
-| `project/` | многофайловый проект: 6 модулей, импорт `@use`, вызовы `math::…` |
 | `tests/` | тестовый проект: `@test`-модуль `calc.glyph` + `main.glyph`, `glyphc test` |
+| `nns/mlp.ns` | NeuralScript: MLP classifier `Tensor[Batch, Features]` → `Dense`+`Dropout`, `train{grad{}}` with `cross_entropy` |
+| `nns/transformer.ns` | NeuralScript: minimal transformer `Embedding→Attention→LayerNorm→MLP`, AOT autodiff demo |
+| `nns/dense.ns` | NeuralScript: 7-block transformer with wide final FFN (`WIDE=20484`), same params as MoE K=9 |
+| `nns/static.ns` / `nns/neumoe/static.ns` | NeuralScript: static MoE (K=9 from step 0), frozen routing |
+| `nns/neumoe.ns` / `nns/neumoe/neumoe.ns` | NeuralScript: NeuMoE growing MoE (`ns_expert_birth`), lifecycle + `ns_expert_*` C-ABI |
+| `nns/moe_growth.ns` | NeuralScript: MoE growth study variant |
+| `nns/host.cpp` / `nns/neumoe/host.cpp` | C++ host drivers for `--runtime` — generic over `ns_runtime.h` C-ABI (see docs/nns.md) |
 
 ## Проекты (папки)
-
-### project/
-
-```bash
-glyphc run --input examples/project/src/main.glyph
-# 3 + 4 = 7.000000
-# 3 * 4 = 12.000000
-# 5^2 = 25.000000
-# distance(0,0,3,4) = 5.000000
-# Module system test passed!
-```
-
-Источники: `main.glyph` — entry, импортирует `math` и `geometry` через `@use`
-и вызывает функции квалифицированно (`math::add`, `geometry::distance`).
-Рядом лежат `a.glyph`/`b.glyph`/`cyclic.glyph` для проверки разрешения
-циклических `@use`. Каждый модуль также можно запустить как entry.
 
 ### tests/
 
 ```bash
 cd examples/tests
-glyphc test
+glyphc test  # 9 passing checks + 1 intentional negative test
 ```
 
 См. [docs/testing.md](../docs/testing.md).

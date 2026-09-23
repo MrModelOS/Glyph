@@ -22,8 +22,8 @@ pub struct MLIRCompiler {
 
 #[derive(Debug, Clone)]
 struct LayerMeta {
-    type_name: String,       // "Dense", "Dropout", "Embedding", ...
-    activation: String,      // "ReLU"/"GELU"/... (empty if none)
+    type_name: String,  // "Dense", "Dropout", "Embedding", ...
+    activation: String, // "ReLU"/"GELU"/... (empty if none)
     dropout_rate: f64,
     num_heads: i64,
     causal: bool,
@@ -51,6 +51,12 @@ impl Default for LayerMeta {
             vocab_size: 0,
             weight_ids: Vec::new(),
         }
+    }
+}
+
+impl Default for MLIRCompiler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -166,8 +172,10 @@ impl MLIRCompiler {
     pub fn compile(&mut self, program: &mut Program) -> MLIRModule {
         self.collect_aliases(program);
         let mut module = MLIRModule::default();
-        let mut main_fn = MLIRFunction::default();
-        main_fn.name = "main".to_string();
+        let mut main_fn = MLIRFunction {
+            name: "main".to_string(),
+            ..MLIRFunction::default()
+        };
         let mut main_has_content = false;
 
         for stmt in program.top_level.iter() {
@@ -178,7 +186,10 @@ impl MLIRCompiler {
                 StmtKind::NetworkDecl => {
                     self.compile_network(stmt, &mut module);
                 }
-                StmtKind::VarDecl | StmtKind::VarAssign | StmtKind::ExprStmt | StmtKind::ReturnStmt => {
+                StmtKind::VarDecl
+                | StmtKind::VarAssign
+                | StmtKind::ExprStmt
+                | StmtKind::ReturnStmt => {
                     self.compile_stmt(stmt, &mut main_fn);
                     main_has_content = true;
                 }
@@ -300,8 +311,10 @@ impl MLIRCompiler {
 
     fn compile_fn(&mut self, stmt: &Stmt, module: &mut MLIRModule) {
         self.reset_locals();
-        let mut fn_ = MLIRFunction::default();
-        fn_.name = stmt.fn_name.clone();
+        let mut fn_ = MLIRFunction {
+            name: stmt.fn_name.clone(),
+            ..MLIRFunction::default()
+        };
         if let Some(ref body) = stmt.body {
             self.compile_stmt(body, &mut fn_);
         }
@@ -313,16 +326,20 @@ impl MLIRCompiler {
         self.layer_meta.clear();
         self.layer_weight_id.clear();
 
-        let mut fn_ = MLIRFunction::default();
-        fn_.name = stmt.network_name.clone();
+        let mut fn_ = MLIRFunction {
+            name: stmt.network_name.clone(),
+            ..MLIRFunction::default()
+        };
 
         // Weight buffer allocs for trainable layers, shared by forward() AND
         // the train() method.
         let mut weight_allocs: Vec<MLIRInstr> = Vec::new();
 
         for layer in stmt.layers.iter() {
-            let mut meta = LayerMeta::default();
-            meta.type_name = layer.layer_type.clone();
+            let mut meta = LayerMeta {
+                type_name: layer.layer_type.clone(),
+                ..LayerMeta::default()
+            };
 
             for p in layer.layer_params.iter() {
                 if p.name == "activation" {
@@ -347,7 +364,9 @@ impl MLIRCompiler {
                     }
                 } else if p.name == "causal" {
                     if let Some(ref v) = p.value {
-                        meta.causal = v.token.value == "true" || v.token.value == "1" || v.token.value == "yes";
+                        meta.causal = v.token.value == "true"
+                            || v.token.value == "1"
+                            || v.token.value == "yes";
                     }
                 } else if p.name == "experts" || p.name == "num_experts" {
                     if let Some(ref v) = p.value {
@@ -356,8 +375,11 @@ impl MLIRCompiler {
                             meta.num_experts = ev;
                         }
                     }
-                } else if p.name == "ffn_dim" || p.name == "ffn" || p.name == "hidden"
-                    || p.name == "d_ff" || p.name == "intermediate"
+                } else if p.name == "ffn_dim"
+                    || p.name == "ffn"
+                    || p.name == "hidden"
+                    || p.name == "d_ff"
+                    || p.name == "intermediate"
                 {
                     if let Some(ref v) = p.value {
                         let mut fv = 0i64;
@@ -365,8 +387,10 @@ impl MLIRCompiler {
                             meta.ffn_dim = fv;
                         }
                     }
-                } else if p.name == "initial_experts" || p.name == "active"
-                    || p.name == "k" || p.name == "initial_active"
+                } else if p.name == "initial_experts"
+                    || p.name == "active"
+                    || p.name == "k"
+                    || p.name == "initial_active"
                 {
                     if let Some(ref v) = p.value {
                         let mut kv = 0i64;
@@ -391,7 +415,8 @@ impl MLIRCompiler {
                 }
             }
 
-            let trainable = meta.type_name == "Dense" || meta.type_name == "Linear"
+            let trainable = meta.type_name == "Dense"
+                || meta.type_name == "Linear"
                 || meta.type_name == "Embedding"
                 || meta.type_name == "Attention"
                 || meta.type_name == "MultiHeadAttention"
@@ -486,35 +511,26 @@ impl MLIRCompiler {
                     let e1_name = format!("{}_e1_w", layer.layer_name);
                     let e2_name = format!("{}_e2_w", layer.layer_name);
 
-                    let mut gate =
-                        MLIRInstr::new(MLIROp::TensorAlloc, gate_name.clone());
+                    let mut gate = MLIRInstr::new(MLIROp::TensorAlloc, gate_name.clone());
                     gate.result_type = TensorType::new(
                         vec![DimExpr::constant(d), DimExpr::constant(e)],
                         Dtype::Float32,
                     );
                     gate.comment = format!("allocate MoE router [{}, {}]", d, e);
 
-                    let mut e1 =
-                        MLIRInstr::new(MLIROp::TensorAlloc, e1_name.clone());
+                    let mut e1 = MLIRInstr::new(MLIROp::TensorAlloc, e1_name.clone());
                     e1.result_type = TensorType::new(
                         vec![DimExpr::constant(e), DimExpr::constant(d * h)],
                         Dtype::Float32,
                     );
-                    e1.comment = format!(
-                        "allocate MoE expert FFN-1 [{}, {} -> {}]",
-                        e, d, h
-                    );
+                    e1.comment = format!("allocate MoE expert FFN-1 [{}, {} -> {}]", e, d, h);
 
-                    let mut e2 =
-                        MLIRInstr::new(MLIROp::TensorAlloc, e2_name.clone());
+                    let mut e2 = MLIRInstr::new(MLIROp::TensorAlloc, e2_name.clone());
                     e2.result_type = TensorType::new(
                         vec![DimExpr::constant(e), DimExpr::constant(h * d)],
                         Dtype::Float32,
                     );
-                    e2.comment = format!(
-                        "allocate MoE expert FFN-2 [{}, {} -> {}]",
-                        e, h, d
-                    );
+                    e2.comment = format!("allocate MoE expert FFN-2 [{}, {} -> {}]", e, h, d);
 
                     meta.weight_ids.push(gate_name);
                     meta.weight_ids.push(e1_name);
@@ -525,8 +541,7 @@ impl MLIRCompiler {
                 }
             }
 
-            self.layer_meta
-                .insert(layer.layer_name.clone(), meta);
+            self.layer_meta.insert(layer.layer_name.clone(), meta);
         }
 
         // Forward pass(es) -> inference function.
@@ -541,12 +556,13 @@ impl MLIRCompiler {
             }
         }
         module.functions.push(fn_);
-        module.functions.last_mut().unwrap().is_train = false;
 
         // train() method(s) -> separate function sharing the SAME weight allocs.
-        let mut tfn = MLIRFunction::default();
-        tfn.name = format!("{}_train", stmt.network_name);
-        tfn.is_train = true;
+        let mut tfn = MLIRFunction {
+            name: format!("{}_train", stmt.network_name),
+            is_train: true,
+            ..MLIRFunction::default()
+        };
         let mut have_train = false;
         for w in weight_allocs.iter() {
             tfn.instructions.push(w.clone());
@@ -610,10 +626,7 @@ impl MLIRCompiler {
                     let orig = fn_.instructions[i - 1].clone();
                     match orig.op {
                         MLIROp::CrossEntropy => {
-                            let mut lg = MLIRInstr::new(
-                                MLIROp::LossGrad,
-                                self.new_temp("g"),
-                            );
+                            let mut lg = MLIRInstr::new(MLIROp::LossGrad, self.new_temp("g"));
                             lg.operands = orig.operands.clone();
                             lg.attribute = "cross_entropy".to_string();
                             lg.comment = "d(cross_entropy)/d(preds)".to_string();
@@ -626,10 +639,8 @@ impl MLIRCompiler {
                         MLIROp::ElementwiseBinop => {
                             if let Some(cit) = g.get(&orig.result_id).cloned() {
                                 if orig.operands.len() >= 2 {
-                                    let mut bgl = MLIRInstr::new(
-                                        MLIROp::BinopGrad,
-                                        self.new_temp("g"),
-                                    );
+                                    let mut bgl =
+                                        MLIRInstr::new(MLIROp::BinopGrad, self.new_temp("g"));
                                     bgl.operands = vec![
                                         cit.clone(),
                                         orig.operands[0].clone(),
@@ -648,10 +659,8 @@ impl MLIRCompiler {
                                     fn_.instructions.push(bgl.clone());
                                     self.set_grad(&mut g, &orig.operands[0], &bgl.result_id, fn_);
 
-                                    let mut bgr = MLIRInstr::new(
-                                        MLIROp::BinopGrad,
-                                        self.new_temp("g"),
-                                    );
+                                    let mut bgr =
+                                        MLIRInstr::new(MLIROp::BinopGrad, self.new_temp("g"));
                                     bgr.operands = vec![
                                         cit,
                                         orig.operands[0].clone(),
@@ -675,14 +684,9 @@ impl MLIRCompiler {
                         MLIROp::Matmul => {
                             if let Some(cit) = g.get(&orig.result_id).cloned() {
                                 if orig.operands.len() >= 2 {
-                                    let mut ia = MLIRInstr::new(
-                                        MLIROp::MatmulGradA,
-                                        self.new_temp("g"),
-                                    );
-                                    ia.operands = vec![
-                                        cit.clone(),
-                                        orig.operands[1].clone(),
-                                    ];
+                                    let mut ia =
+                                        MLIRInstr::new(MLIROp::MatmulGradA, self.new_temp("g"));
+                                    ia.operands = vec![cit.clone(), orig.operands[1].clone()];
                                     ia.comment = format!(
                                         "d{} = d{} @ {}^T",
                                         orig.operands[0], orig.result_id, orig.operands[1]
@@ -690,10 +694,8 @@ impl MLIRCompiler {
                                     fn_.instructions.push(ia.clone());
                                     self.set_grad(&mut g, &orig.operands[0], &ia.result_id, fn_);
 
-                                    let mut iw = MLIRInstr::new(
-                                        MLIROp::MatmulGradW,
-                                        self.new_temp("g"),
-                                    );
+                                    let mut iw =
+                                        MLIRInstr::new(MLIROp::MatmulGradW, self.new_temp("g"));
                                     iw.operands = vec![
                                         orig.operands[0].clone(),
                                         cit,
@@ -711,15 +713,11 @@ impl MLIRCompiler {
                         MLIROp::Layernorm | MLIROp::LayerLayernorm => {
                             if let Some(cit) = g.get(&orig.result_id).cloned() {
                                 if !orig.operands.is_empty() {
-                                    let mut lg = MLIRInstr::new(
-                                        MLIROp::LayernormGrad,
-                                        self.new_temp("g"),
-                                    );
-                                    lg.operands = vec![
-                                        cit,
-                                        orig.operands[0].clone(),
-                                    ];
-                                    lg.attribute = Self::activation_name_from_op(orig.op).to_string();
+                                    let mut lg =
+                                        MLIRInstr::new(MLIROp::LayernormGrad, self.new_temp("g"));
+                                    lg.operands = vec![cit, orig.operands[0].clone()];
+                                    lg.attribute =
+                                        Self::activation_name_from_op(orig.op).to_string();
                                     lg.comment = format!(
                                         "d{} = layernorm_grad(d{}, {})",
                                         orig.operands[0], orig.result_id, orig.operands[0]
@@ -740,15 +738,11 @@ impl MLIRCompiler {
                         | MLIROp::Softmax => {
                             if let Some(cit) = g.get(&orig.result_id).cloned() {
                                 if !orig.operands.is_empty() {
-                                    let mut ig = MLIRInstr::new(
-                                        MLIROp::ActivationGrad,
-                                        self.new_temp("g"),
-                                    );
-                                    ig.operands = vec![
-                                        cit,
-                                        orig.operands[0].clone(),
-                                    ];
-                                    ig.attribute = Self::activation_name_from_op(orig.op).to_string();
+                                    let mut ig =
+                                        MLIRInstr::new(MLIROp::ActivationGrad, self.new_temp("g"));
+                                    ig.operands = vec![cit, orig.operands[0].clone()];
+                                    ig.attribute =
+                                        Self::activation_name_from_op(orig.op).to_string();
                                     ig.comment = format!(
                                         "d{} = d{} * act'(in)",
                                         orig.operands[0], orig.result_id
@@ -761,14 +755,9 @@ impl MLIRCompiler {
                         MLIROp::Dropout => {
                             if !orig.operands.is_empty() {
                                 if let Some(cit) = g.get(&orig.result_id).cloned() {
-                                    let mut ig = MLIRInstr::new(
-                                        MLIROp::ActivationGrad,
-                                        self.new_temp("g"),
-                                    );
-                                    ig.operands = vec![
-                                        cit,
-                                        orig.result_id.clone(),
-                                    ];
+                                    let mut ig =
+                                        MLIRInstr::new(MLIROp::ActivationGrad, self.new_temp("g"));
+                                    ig.operands = vec![cit, orig.result_id.clone()];
                                     ig.attribute = "dropout".to_string();
                                     ig.comment = format!(
                                         "d{} = d{} * dropout_mask",
@@ -782,10 +771,8 @@ impl MLIRCompiler {
                         MLIROp::LayerEmbedding => {
                             if let Some(cit) = g.get(&orig.result_id).cloned() {
                                 if orig.operands.len() >= 2 {
-                                    let mut wg = MLIRInstr::new(
-                                        MLIROp::EmbeddingGradW,
-                                        self.new_temp("g"),
-                                    );
+                                    let mut wg =
+                                        MLIRInstr::new(MLIROp::EmbeddingGradW, self.new_temp("g"));
                                     wg.operands = vec![
                                         cit,
                                         orig.operands[1].clone(),
@@ -805,10 +792,8 @@ impl MLIRCompiler {
                                 if orig.operands.len() >= 4 {
                                     let base = orig.operands.clone();
                                     // dx (gate path + routed expert path)
-                                    let mut mx = MLIRInstr::new(
-                                        MLIROp::MoeGradX,
-                                        self.new_temp("g"),
-                                    );
+                                    let mut mx =
+                                        MLIRInstr::new(MLIROp::MoeGradX, self.new_temp("g"));
                                     let mut ops = Vec::new();
                                     ops.push(cit.clone());
                                     ops.extend(base.clone());
@@ -821,10 +806,8 @@ impl MLIRCompiler {
                                     fn_.instructions.push(mx.clone());
                                     self.set_grad(&mut g, &base[0], &mx.result_id, fn_);
                                     // dWg (router weights)
-                                    let mut mg = MLIRInstr::new(
-                                        MLIROp::MoeGradWg,
-                                        self.new_temp("g"),
-                                    );
+                                    let mut mg =
+                                        MLIRInstr::new(MLIROp::MoeGradWg, self.new_temp("g"));
                                     mg.operands = mx.operands.clone();
                                     mg.attribute = orig.attribute.clone();
                                     mg.int_attr = orig.int_attr;
@@ -834,10 +817,8 @@ impl MLIRCompiler {
                                     fn_.instructions.push(mg.clone());
                                     self.set_grad(&mut g, &base[1], &mg.result_id, fn_);
                                     // dWe1 / dWe2
-                                    let mut me1 = MLIRInstr::new(
-                                        MLIROp::MoeGradWe1,
-                                        self.new_temp("g"),
-                                    );
+                                    let mut me1 =
+                                        MLIRInstr::new(MLIROp::MoeGradWe1, self.new_temp("g"));
                                     me1.operands = mx.operands.clone();
                                     me1.attribute = orig.attribute.clone();
                                     me1.int_attr = orig.int_attr;
@@ -846,10 +827,8 @@ impl MLIRCompiler {
                                     me1.comment = "dWe1(moe)".to_string();
                                     fn_.instructions.push(me1.clone());
                                     self.set_grad(&mut g, &base[2], &me1.result_id, fn_);
-                                    let mut me2 = MLIRInstr::new(
-                                        MLIROp::MoeGradWe2,
-                                        self.new_temp("g"),
-                                    );
+                                    let mut me2 =
+                                        MLIRInstr::new(MLIROp::MoeGradWe2, self.new_temp("g"));
                                     me2.operands = mx.operands.clone();
                                     me2.attribute = orig.attribute.clone();
                                     me2.int_attr = orig.int_attr;
@@ -859,7 +838,7 @@ impl MLIRCompiler {
                                     fn_.instructions.push(me2.clone());
                                     self.set_grad(&mut g, &base[3], &me2.result_id, fn_);
                                 }
-                                }
+                            }
                         }
                         MLIROp::LayerAttention => {
                             if let Some(cit2) = g.get(&orig.result_id).cloned() {
@@ -870,10 +849,8 @@ impl MLIRCompiler {
                                         orig.attribute.clone()
                                     };
                                     let _d_str = orig.int_attr.to_string();
-                                    let mut ax = MLIRInstr::new(
-                                        MLIROp::AttentionGradX,
-                                        self.new_temp("g"),
-                                    );
+                                    let mut ax =
+                                        MLIRInstr::new(MLIROp::AttentionGradX, self.new_temp("g"));
                                     ax.operands = vec![
                                         cit2,
                                         orig.operands[0].clone(),
@@ -896,16 +873,18 @@ impl MLIRCompiler {
                                         MLIROp::AttentionGradWo,
                                     ];
                                     for (qi, wop) in wops.iter().enumerate() {
-                                        let mut aq = MLIRInstr::new(
-                                            *wop,
-                                            self.new_temp("g"),
-                                        );
+                                        let mut aq = MLIRInstr::new(*wop, self.new_temp("g"));
                                         aq.operands = ax.operands.clone();
                                         aq.attribute = h_str.clone();
                                         aq.int_attr = orig.int_attr;
                                         aq.ints_attr = orig.ints_attr.clone();
                                         fn_.instructions.push(aq.clone());
-                                        self.set_grad(&mut g, &orig.operands[1 + qi], &aq.result_id, fn_);
+                                        self.set_grad(
+                                            &mut g,
+                                            &orig.operands[1 + qi],
+                                            &aq.result_id,
+                                            fn_,
+                                        );
                                     }
                                 }
                             }
@@ -981,15 +960,10 @@ impl MLIRCompiler {
             StmtKind::VarDecl => {
                 if let Some(ref var_type) = stmt.var_type {
                     if var_type.is_tensor() {
-                        let mut instr = MLIRInstr::new(
-                            MLIROp::TensorAlloc,
-                            stmt.var_name.clone(),
-                        );
+                        let mut instr = MLIRInstr::new(MLIROp::TensorAlloc, stmt.var_name.clone());
                         instr.result_type = var_type.tensor_type.clone();
-                        instr.comment = format!(
-                            "allocate {}",
-                            tensor_type_to_string(&var_type.tensor_type)
-                        );
+                        instr.comment =
+                            format!("allocate {}", tensor_type_to_string(&var_type.tensor_type));
                         fn_.instructions.push(instr);
                     }
                 }
@@ -1005,8 +979,7 @@ impl MLIRCompiler {
     }
 
     fn compile_expr_value(&mut self, expr: &Expr, fn_: &mut MLIRFunction) -> String {
-        let out = self.compile_expr(expr, fn_);
-        out
+        self.compile_expr(expr, fn_)
     }
 
     /// Compile an expression, returning the value id. Also emits instructions.
@@ -1032,12 +1005,8 @@ impl MLIRCompiler {
                 // as the Rust AST doesn't attach it in the same way.
                 out_id
             }
-            ExprKind::MatmulOp => {
-                self.lower_matmul(expr, fn_)
-            }
-            ExprKind::PipelineOp => {
-                self.lower_pipeline(expr, fn_)
-            }
+            ExprKind::MatmulOp => self.lower_matmul(expr, fn_),
+            ExprKind::PipelineOp => self.lower_pipeline(expr, fn_),
             ExprKind::BinaryOp => {
                 let lhs = if let Some(ref left) = expr.left {
                     self.compile_expr(left, fn_)
@@ -1166,7 +1135,11 @@ impl MLIRCompiler {
                     let mut instr = MLIRInstr::new(MLIROp::Dropout, instr_id.clone());
                     instr.operands = vec![input.clone()];
                     instr.float_attr = m.dropout_rate;
-                    instr.comment = format!("dropout({}, p={})", input, crate::nns::fmt_float(m.dropout_rate));
+                    instr.comment = format!(
+                        "dropout({}, p={})",
+                        input,
+                        crate::nns::fmt_float(m.dropout_rate)
+                    );
                     fn_.instructions.push(instr);
                     return instr_id;
                 }
@@ -1177,14 +1150,10 @@ impl MLIRCompiler {
                         .cloned()
                         .unwrap_or_else(|| wname.to_string());
                     let instr_id = self.new_temp("emb");
-                    let mut instr =
-                        MLIRInstr::new(MLIROp::LayerEmbedding, instr_id.clone());
+                    let mut instr = MLIRInstr::new(MLIROp::LayerEmbedding, instr_id.clone());
                     instr.operands = vec![wid.clone(), input.clone()];
                     instr.result_type = TensorType::new(
-                        vec![
-                            DimExpr::dynamic(),
-                            DimExpr::constant(m.emb_dim),
-                        ],
+                        vec![DimExpr::dynamic(), DimExpr::constant(m.emb_dim)],
                         Dtype::Float32,
                     );
                     instr.comment = format!("embedding({}, {})", input, wid);
@@ -1239,8 +1208,7 @@ impl MLIRCompiler {
                         return input;
                     }
                     let instr_id = self.new_temp("attn");
-                    let mut instr =
-                        MLIRInstr::new(MLIROp::LayerAttention, instr_id.clone());
+                    let mut instr = MLIRInstr::new(MLIROp::LayerAttention, instr_id.clone());
                     instr.operands = vec![
                         input.clone(),
                         m.weight_ids[0].clone(),
@@ -1252,16 +1220,10 @@ impl MLIRCompiler {
                     instr.int_attr = m.emb_dim;
                     instr.ints_attr = vec![if m.causal { 1 } else { 0 }];
                     instr.result_type = TensorType::new(
-                        vec![
-                            DimExpr::dynamic(),
-                            DimExpr::constant(m.emb_dim),
-                        ],
+                        vec![DimExpr::dynamic(), DimExpr::constant(m.emb_dim)],
                         Dtype::Float32,
                     );
-                    instr.comment = format!(
-                        "attention({}, heads={})",
-                        input, m.num_heads
-                    );
+                    instr.comment = format!("attention({}, heads={})", input, m.num_heads);
                     fn_.instructions.push(instr);
                     return instr_id;
                 }
@@ -1274,8 +1236,7 @@ impl MLIRCompiler {
                         return input;
                     }
                     let instr_id = self.new_temp("moe");
-                    let mut instr =
-                        MLIRInstr::new(MLIROp::LayerMoe, instr_id.clone());
+                    let mut instr = MLIRInstr::new(MLIROp::LayerMoe, instr_id.clone());
                     instr.operands = vec![
                         input.clone(),
                         m.weight_ids[0].clone(),
@@ -1287,10 +1248,7 @@ impl MLIRCompiler {
                     instr.float_attr = m.ffn_dim as f64;
                     instr.ints_attr = vec![m.initial_experts];
                     instr.result_type = TensorType::new(
-                        vec![
-                            DimExpr::dynamic(),
-                            DimExpr::constant(m.emb_dim),
-                        ],
+                        vec![DimExpr::dynamic(), DimExpr::constant(m.emb_dim)],
                         Dtype::Float32,
                     );
                     instr.comment = format!(
@@ -1316,7 +1274,10 @@ impl MLIRCompiler {
         instr.comment = format!("{} -> {}", input, wname);
         fn_.instructions.push(instr);
 
-        let act = meta.as_ref().map(|m| m.activation.clone()).unwrap_or_default();
+        let act = meta
+            .as_ref()
+            .map(|m| m.activation.clone())
+            .unwrap_or_default();
         if !act.is_empty() {
             self.lower_activation(&act, &instr_id, fn_)
         } else {
@@ -1324,12 +1285,7 @@ impl MLIRCompiler {
         }
     }
 
-    fn lower_function_call(
-        &mut self,
-        func: &str,
-        expr: &Expr,
-        fn_: &mut MLIRFunction,
-    ) -> String {
+    fn lower_function_call(&mut self, func: &str, expr: &Expr, fn_: &mut MLIRFunction) -> String {
         let op = match func {
             "cross_entropy" => MLIROp::CrossEntropy,
             "Dense" | "Linear" => MLIROp::LayerDense,
@@ -1358,9 +1314,8 @@ impl MLIRCompiler {
             instr.operands.push(a);
         }
         if op == MLIROp::Dropout && expr.args.len() >= 2 {
-            if let Some(ref rate_arg) = expr.args.get(1) {
-                if rate_arg.kind == ExprKind::LiteralInt
-                    || rate_arg.kind == ExprKind::LiteralFloat
+            if let Some(rate_arg) = expr.args.get(1) {
+                if rate_arg.kind == ExprKind::LiteralInt || rate_arg.kind == ExprKind::LiteralFloat
                 {
                     if let Ok(rv) = rate_arg.token.value.parse::<f64>() {
                         instr.float_attr = rv;
@@ -1373,18 +1328,11 @@ impl MLIRCompiler {
         instr_id
     }
 
-    fn lower_data_movement(
-        &mut self,
-        func: &str,
-        expr: &Expr,
-        fn_: &mut MLIRFunction,
-    ) -> String {
+    fn lower_data_movement(&mut self, func: &str, expr: &Expr, fn_: &mut MLIRFunction) -> String {
         let lit_int = |e: &Expr, out: &mut i64| -> bool {
             match e.kind {
                 ExprKind::LiteralInt => e.token.value.parse::<i64>().map(|v| *out = v).is_ok(),
-                ExprKind::LiteralFloat => {
-                    e.token.value.parse::<i64>().map(|v| *out = v).is_ok()
-                }
+                ExprKind::LiteralFloat => e.token.value.parse::<i64>().map(|v| *out = v).is_ok(),
                 _ => false,
             }
         };

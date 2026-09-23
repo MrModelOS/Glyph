@@ -1,6 +1,6 @@
 use crate::ast::*;
 use crate::lexer::Lexer;
-use crate::parser::{Parser, ParseError};
+use crate::parser::{ParseError, Parser};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -65,9 +65,9 @@ impl ModuleResolver {
             .map_err(|e| ModuleError::IoError(format!("{}: {}", file_path.display(), e)))?;
 
         let mut lexer = Lexer::new(&source);
-        let tokens = lexer
-            .tokenize()
-            .map_err(|e| ModuleError::ParseError(module_name.to_string(), ParseError::LexerError(e)))?;
+        let tokens = lexer.tokenize().map_err(|e| {
+            ModuleError::ParseError(module_name.to_string(), ParseError::LexerError(e))
+        })?;
 
         let mut parser = Parser::new(tokens);
         let ast = parser
@@ -78,12 +78,8 @@ impl ModuleResolver {
         let dependencies = self.extract_dependencies(&ast);
 
         // Store the module
-        self.modules.insert(
-            module_name.to_string(),
-            ResolvedModule {
-                ast,
-            },
-        );
+        self.modules
+            .insert(module_name.to_string(), ResolvedModule { ast });
 
         // Build dependency graph
         self.graph
@@ -135,7 +131,7 @@ impl ModuleResolver {
         let without_ext = relative.with_extension("");
         without_ext
             .components()
-            .map(|c| c.as_os_str().to_str().unwrap())
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
             .collect::<Vec<_>>()
             .join("::")
     }
@@ -180,25 +176,26 @@ impl ModuleResolver {
         stack.push(node.to_string());
         on_stack.insert(node.to_string());
 
-        // Visit neighbors
+        // Visit neighbors. DFS invariant: both maps receive `node` on entry and
+        // entries are never removed, so recursive calls and back edges leave
+        // every visited neighbor's index and lowlink available here.
         if let Some(neighbors) = self.graph.get(node) {
             for neighbor in neighbors {
                 if !indices.contains_key(neighbor) {
                     // Neighbor not yet visited
-                    self.tarjan_dfs(
-                        neighbor,
-                        index_counter,
-                        stack,
-                        on_stack,
-                        indices,
-                        lowlinks,
-                    )?;
-                    let neighbor_lowlink = *lowlinks.get(neighbor).unwrap();
+                    self.tarjan_dfs(neighbor, index_counter, stack, on_stack, indices, lowlinks)?;
+                    let neighbor_lowlink = lowlinks
+                        .get(neighbor)
+                        .copied()
+                        .expect("tarjan invariant: neighbor lowlink must exist");
                     let node_lowlink = lowlinks.get(node).copied().unwrap_or(0);
                     lowlinks.insert(node.to_string(), node_lowlink.min(neighbor_lowlink));
                 } else if on_stack.contains(neighbor) {
                     // Neighbor is on the stack - back edge (cycle)
-                    let neighbor_index = *indices.get(neighbor).unwrap();
+                    let neighbor_index = *indices
+                        .get(neighbor)
+                        .expect("tarjan invariant: neighbor index must exist");
+
                     let node_lowlink = lowlinks.get(node).copied().unwrap_or(0);
                     lowlinks.insert(node.to_string(), node_lowlink.min(neighbor_index));
                 }
@@ -206,12 +203,17 @@ impl ModuleResolver {
         }
 
         // If node is a root node, pop the stack to extract the SCC
-        let node_index = *indices.get(node).unwrap();
-        let node_lowlink = *lowlinks.get(node).unwrap();
+        let node_index = indices
+            .get(node)
+            .copied()
+            .expect("tarjan invariant: node index must exist");
+        let node_lowlink = lowlinks
+            .get(node)
+            .copied()
+            .expect("tarjan invariant: node lowlink must exist");
         if node_index == node_lowlink {
             let mut scc = Vec::new();
-            loop {
-                let w = stack.pop().unwrap();
+            while let Some(w) = stack.pop() {
                 on_stack.remove(&w);
                 scc.push(w.clone());
                 if w == node {
@@ -236,9 +238,9 @@ impl ModuleResolver {
         // Build reverse graph: rev[b] = [a, ...] means a depends on b
         let mut rev: HashMap<String, Vec<String>> = HashMap::new();
         for (name, deps) in &self.graph {
-            rev.entry(name.clone()).or_insert_with(Vec::new);
+            rev.entry(name.clone()).or_default();
             for dep in deps {
-                rev.entry(dep.clone()).or_insert_with(Vec::new).push(name.clone());
+                rev.entry(dep.clone()).or_default().push(name.clone());
             }
         }
 
@@ -266,10 +268,14 @@ impl ModuleResolver {
             // For each module that depends on this node, reduce its in-degree
             if let Some(dependents) = rev.get(&node) {
                 for dep in dependents {
-                    let degree = in_degree.get_mut(dep).unwrap();
-                    *degree -= 1;
-                    if *degree == 0 {
-                        queue.push_back(dep.clone());
+                    if let Some(degree) = in_degree.get_mut(dep) {
+                        *degree -= 1;
+                        if *degree == 0 {
+                            queue.push_back(dep.clone());
+                        }
+                    } else {
+                        // Defensive: missing in_degree entry should not panic.
+                        continue;
                     }
                 }
             }
@@ -303,11 +309,11 @@ mod tests {
         resolver
             .graph
             .insert("b".to_string(), vec!["c".to_string()]);
-        resolver
-            .graph
-            .insert("c".to_string(), vec![]);
+        resolver.graph.insert("c".to_string(), vec![]);
 
-        let sorted = resolver.topological_sort().unwrap();
+        let sorted = resolver
+            .topological_sort()
+            .expect("test invariant: topological_sort must succeed");
         assert!(sorted.iter().position(|x| x == "c") < sorted.iter().position(|x| x == "b"));
         assert!(sorted.iter().position(|x| x == "b") < sorted.iter().position(|x| x == "a"));
     }
@@ -335,9 +341,7 @@ mod tests {
         resolver
             .graph
             .insert("b".to_string(), vec!["c".to_string()]);
-        resolver
-            .graph
-            .insert("c".to_string(), vec![]);
+        resolver.graph.insert("c".to_string(), vec![]);
 
         let result = resolver.detect_cycles();
         assert!(result.is_ok());

@@ -8,17 +8,17 @@
 //! The pipe is: `.ns` source -> tokens -> AST -> shape-check -> MLIR
 //! (textual IR + reverse-mode lowering) -> fusion -> C++/CUDA source.
 
-pub mod token;
-pub mod lexer;
 pub mod ast;
-pub mod parser;
-pub mod type_system;
-pub mod shape_checker;
+pub mod codegen;
+pub mod lexer;
 pub mod mlir;
 pub mod optim;
-pub mod training;
-pub mod codegen;
+pub mod parser;
 pub mod runtime;
+pub mod shape_checker;
+pub mod token;
+pub mod training;
+pub mod type_system;
 
 use std::fmt;
 

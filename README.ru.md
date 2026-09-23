@@ -3,9 +3,9 @@
 [English](README.md) | Русский
 
 [![CI](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml/badge.svg)](https://github.com/MrModelOS/Glyph/actions/workflows/ci.yml)
-![version](https://img.shields.io/badge/glyphc-v2.0.0-blue)
+![version](https://img.shields.io/badge/glyphc-v2.1.0-blue)
 
-Компилятор языка программирования **Glyph** v2.0.0, написанный на Rust.
+Компилятор языка программирования **Glyph** v2.1.0, написанный на Rust.
 
 Glyph транслируется в C-код (GNU statement expressions) и собирается через GCC или clang.
 Скомпилированные программы — обычные нативные бинарники.
@@ -41,26 +41,57 @@ Glyph транслируется в C-код (GNU statement expressions) и со
   типизированные каналы `Channel<T>(capacity)` (буферизованные + rendezvous),
   `send`/`recv`/`close`, `select` по `recv`/`await` с `timeout(мс)`/`default`
 - Встроенный тестовый фреймворк: `@test`, ассерты, `glyphc test`
-- `glyphc fmt`: канонические отступы/пробелы, комментарии сохраняются, `--check`/`--write`
 - `glyphc fmt`: канонические отступы с сохранением комментариев, `--check`/`--write`
+
+## NeuralScript (`nns`)
+
+NeuralScript (`.ns`) встроен в тот же бинарь:
+
+```bash
+glyphc nns examples/nns/mlp.ns --check
+glyphc nns examples/nns/mlp.ns --cpp --runtime -o model.cpp
+glyphc nns examples/nns/mlp.ns --cuda --runtime
+```
+
+Поддерживаются CPU C++, CUDA, runtime C-ABI и текстовый MLIR-dump.
+Подробности: [docs/nns.md](docs/nns.md). Экспертные `--fp16`, ROCm и Metal
+сейчас требуют осторожности: fp16 пока добавляет CUDA-заголовок, а ROCm/Metal
+явно помечены как delegating-to-CUDA заглушки.
 
 ## Установка
 
-Нужен Rust (1.70+), а также `gcc` (или `clang`) линкер в `PATH`.
+Нужен Rust (1.85+), а также `gcc` (или `clang`) линкер в `PATH`.
+
+```bash
+# Установка готового бинаря
+curl -fsSL https://raw.githubusercontent.com/MrModelOS/Glyph/main/install.sh | bash
+
+# Или через Cargo
+cargo install --git https://github.com/MrModelOS/Glyph --locked
+```
+
+Для разработки:
 
 ```bash
 git clone https://github.com/MrModelOS/Glyph.git
-cd Glyph/glyphc
+cd Glyph
 cargo build --release
 ```
 
-Бинарь появится в `target/release/glyphc`. Для быстрых итераций:
-
-```bash
-cargo build
-```
+Бинарь появится в `target/release/glyphc`. Готовые архивы Linux/macOS/Windows
+публикуются в [Releases](https://github.com/MrModelOS/Glyph/releases).
 
 ## Быстрый старт
+
+Создайте проект встроенным шаблоном:
+
+```bash
+glyphc new hello
+cd hello
+glyphc build
+```
+
+Или скомпилируйте один файл:
 
 `hello.glyph`:
 
@@ -90,12 +121,14 @@ glyphc run --input hello.glyph
 | `test [-i f.glyph] [--compiler gcc] [--opt -O2]` | Запустить `@test`-функции (без `-i` сканирует `./src`) |
 | `fmt --input f.glyph [--write] [--check]` | Канонические отступы/пробелы; комментарии сохраняются (по умолчанию — в stdout) |
 | `glyphc --lsp` | LSP-сервер: живые диагностики (лексер/парсер/тайпчекер, полные спаны), hover и completion |
+| `new <name>` / `init [name]` | Создать проект с `glyph.toml` и `src/main.glyph` |
+| `nns <file.ns> [--check] [--cpp] [--simd] [--cuda] [--runtime] [--mlir] [--fp16] [-o <file>]` | Tensor-компилятор NeuralScript |
 
 Общие флаги: `-h/--help`, `-V/--version`.
 
 ## Язык
 
-Подробный справочник — [docs/language.md](docs/language.md). Краткая выжимка:
+Подробный справочник: [English](docs/language_en.md) · [Русский](docs/language.md). Краткая выжимка:
 
 ### Переменные и константы
 
@@ -367,8 +400,8 @@ optimization = "-O2"
 
 ## Примеры
 
-Все примеры в `examples/` — 22 файла + многофайловые проекты `examples/project/` и
-`examples/tests/`. Проверить сразу всё:
+Все примеры в `examples/` — 22 файла + тестовый проект `examples/tests/` и
+NeuralScript-примеры в `examples/nns/`. Проверить сразу всё:
 
 ```bash
 examples/run_all.sh

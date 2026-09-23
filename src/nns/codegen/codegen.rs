@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Code generation port of `NeuralScript/src/codegen/codegen.cpp`:
 //! emits a self-contained C++ (CPU) or CUDA source implementing the compiled
 //! MLIR graph, plus the runtime driver that main.cpp relied on.
@@ -125,9 +126,15 @@ pub fn fmt_float9(v: f32) -> String {
     let end = sig_start as usize + P; // one past the last kept digit
     let digit = |c: u8| c - b'0';
     let mut kept: Vec<u8> = if n <= end as i64 {
-        total_b[sig_start as usize..].iter().map(|&c| digit(c)).collect()
+        total_b[sig_start as usize..]
+            .iter()
+            .map(|&c| digit(c))
+            .collect()
     } else {
-        total_b[sig_start as usize..end].iter().map(|&c| digit(c)).collect()
+        total_b[sig_start as usize..end]
+            .iter()
+            .map(|&c| digit(c))
+            .collect()
     };
     let mut x = x_pre;
     if n > end as i64 {
@@ -210,7 +217,6 @@ pub fn fmt_float9(v: f32) -> String {
 }
 
 /// Little-endian base-10^9 bignum, big enough for m * 5^149 (~7e104).
-
 struct BigDec(Vec<u32>);
 
 impl BigDec {
@@ -300,18 +306,21 @@ impl CodeGenerator {
     }
 
     /// Port of `CodeGenerator::dtype_c_name`.
-    pub fn dtype_c_name(&self, d: Dtype) -> &'static str {
+    pub fn dtype_c_name(&self, d: Dtype) -> NsResult<&'static str> {
         match d {
-            Dtype::Float16 => "half",
-            Dtype::Float32 => "float",
-            Dtype::Float64 => "double",
-            Dtype::Int8 => "int8_t",
-            Dtype::Int16 => "int16_t",
-            Dtype::Int32 => "int32_t",
-            Dtype::Int64 => "int64_t",
-            Dtype::Fp8 => "int8_t",  // placeholder fp8
-            Dtype::Fp4 => "int8_t",  // placeholder fp4
-            Dtype::Bool => "bool",
+            Dtype::Float16 => Err(ns_error!(
+                "float16 codegen is not implemented: use float32 or wait for native half kernels"
+            )),
+            Dtype::Float32 => Ok("float"),
+            Dtype::Float64 => Ok("double"),
+            Dtype::Int8 => Ok("int8_t"),
+            Dtype::Int16 => Ok("int16_t"),
+            Dtype::Int32 => Ok("int32_t"),
+            Dtype::Int64 => Ok("int64_t"),
+            Dtype::Fp8 | Dtype::Fp4 => Err(ns_error!(
+                "unsupported dtype fp8/fp4: quantized types not yet implemented"
+            )),
+            Dtype::Bool => Ok("bool"),
         }
     }
 
@@ -332,7 +341,12 @@ impl CodeGenerator {
     }
 
     /// Port of `CodeGenerator::emit_train_core_cuda`.
-    fn emit_train_core_cuda(&self, tfn: &MLIRFunction, in_cols: i64, out_cols: i64) -> NsResult<String> {
+    fn emit_train_core_cuda(
+        &self,
+        tfn: &MLIRFunction,
+        in_cols: i64,
+        out_cols: i64,
+    ) -> NsResult<String> {
         emit_train_core_cuda(tfn, in_cols, out_cols, false)
     }
 
@@ -344,6 +358,7 @@ impl CodeGenerator {
     /// ROCm backend — hipified CUDA placeholder that delegates to CUDA.
     /// Emits a distinct header so the output is distinguishable from pure CUDA.
     pub fn gen_rocm(&self, module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
+        eprintln!("warning: ROCm/Metal backend is placeholder delegating to CUDA; no native HIP/MSL kernels yet");
         let cuda_code = gen_cuda(module, opts)?;
         let mut out = String::new();
         out.push_str(cuda_backend::ROCM_HEADER);
@@ -354,6 +369,7 @@ impl CodeGenerator {
     /// Metal backend — placeholder that delegates to CUDA.
     /// Emits a distinct header so the output is distinguishable from pure CUDA.
     pub fn gen_metal(&self, module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
+        eprintln!("warning: ROCm/Metal backend is placeholder delegating to CUDA; no native HIP/MSL kernels yet");
         let cuda_code = gen_cuda(module, opts)?;
         let mut out = String::new();
         out.push_str(cuda_backend::METAL_HEADER);
@@ -374,6 +390,7 @@ impl CodeGenerator {
 /// ROCm/HIP backend — hipified CUDA placeholder that delegates to CUDA.
 /// Emits ROCm header (`#ifdef __HIP_PLATFORM_AMD__`) so output is distinguishable.
 pub fn gen_rocm(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
+    eprintln!("warning: ROCm/Metal backend is placeholder delegating to CUDA; no native HIP/MSL kernels yet");
     let cuda_code = gen_cuda(module, opts)?;
     let mut out = String::new();
     out.push_str(cuda_backend::ROCM_HEADER);
@@ -384,6 +401,7 @@ pub fn gen_rocm(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> 
 /// Metal backend — placeholder that delegates to CUDA.
 /// Emits Metal header placeholder so output is distinguishable.
 pub fn gen_metal(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
+    eprintln!("warning: ROCm/Metal backend is placeholder delegating to CUDA; no native HIP/MSL kernels yet");
     let cuda_code = gen_cuda(module, opts)?;
     let mut out = String::new();
     out.push_str(cuda_backend::METAL_HEADER);
@@ -411,7 +429,8 @@ pub fn lr_schedule_source() -> String {
     ));
     o.push_str(&format!(
         "    if (step < {}) return (float)step / (float){};\n",
-        optim::K_LR_WARMUP_STEPS, optim::K_LR_WARMUP_STEPS
+        optim::K_LR_WARMUP_STEPS,
+        optim::K_LR_WARMUP_STEPS
     ));
     o.push_str(&format!(
         "    const int64_t end = {} > {} ? {} : {};\n",
@@ -420,12 +439,11 @@ pub fn lr_schedule_source() -> String {
         optim::K_LR_TOTAL_STEPS,
         optim::K_LR_WARMUP_STEPS + 1
     ));
-    o.push_str(&format!(
-        "    const int64_t s = step >= end ? end : step;\n"
-    ));
+    o.push_str("    const int64_t s = step >= end ? end : step;\n");
     o.push_str(&format!(
         "    const float t = (float)(s - {}) / (float)(end - {});\n",
-        optim::K_LR_WARMUP_STEPS, optim::K_LR_WARMUP_STEPS
+        optim::K_LR_WARMUP_STEPS,
+        optim::K_LR_WARMUP_STEPS
     ));
     o.push_str(&format!(
         "    return {} + 0.5f * (1.0f - {}) * (1.0f + cosf(3.14159265f * t));\n",
@@ -438,7 +456,7 @@ pub fn lr_schedule_source() -> String {
 
 /// Identify the runtime data input of an inference instruction. GEMMs consume
 /// it as A; v1.2 layer ops consume it via their tensor operand (embedding: the
-/// index vector, operand[1]). Port of `input_op_of`.
+/// index vector, `operand[1]`). Port of `input_op_of`.
 pub fn input_op_of(instr: &MLIRInstr) -> String {
     if instr.op == MLIROp::Matmul || instr.op == MLIROp::Fused {
         return if instr.operands.len() >= 2 {
@@ -475,7 +493,7 @@ pub fn input_op_of(instr: &MLIRInstr) -> String {
         || instr.op == MLIROp::Silu
         || instr.op == MLIROp::Identity
     {
-        return if instr.operands.len() >= 1 {
+        return if !instr.operands.is_empty() {
             instr.operands[0].clone()
         } else {
             String::new()
@@ -575,9 +593,7 @@ pub fn cu_act_code_attr(a: &str) -> &'static str {
 
 /// Shared helper: select the inference function (port of the four-step
 /// selection in gen_cuda/gen_cpu) plus the first train function (if any).
-fn select_functions<'a>(
-    module: &'a MLIRModule,
-) -> (Option<&'a MLIRFunction>, Option<&'a MLIRFunction>) {
+fn select_functions(module: &MLIRModule) -> (Option<&MLIRFunction>, Option<&MLIRFunction>) {
     let mut fn_ = None;
     // NB: the original's "infer" scan has NO break: the LAST function named
     // "infer" wins, mirroring `for (..) if (f.name == "infer") fn = &f;`.
@@ -603,10 +619,7 @@ fn select_functions<'a>(
         }
     }
     if fn_.is_none() {
-        for f in &module.functions {
-            fn_ = Some(f);
-            break;
-        }
+        fn_ = module.functions.first();
     }
     let mut tfn = None;
     for f in &module.functions {
@@ -618,11 +631,48 @@ fn select_functions<'a>(
     (fn_, tfn)
 }
 
+fn reject_unsupported_dtypes(module: &MLIRModule) -> NsResult<()> {
+    for func in &module.functions {
+        for instr in &func.instructions {
+            match instr.result_type.dtype {
+                Dtype::Fp8 | Dtype::Fp4 => {
+                    return Err(ns_error!(
+                        "unsupported dtype fp8/fp4: quantized types not yet implemented"
+                    ));
+                }
+                Dtype::Float16 => {
+                    return Err(ns_error!(
+                        "float16 codegen is not implemented: use float32 or wait for native half kernels"
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    for group in &module.fused_groups {
+        match group.result_type.dtype {
+            Dtype::Fp8 | Dtype::Fp4 => {
+                return Err(ns_error!(
+                    "unsupported dtype fp8/fp4: quantized types not yet implemented"
+                ));
+            }
+            Dtype::Float16 => {
+                return Err(ns_error!(
+                    "float16 codegen is not implemented: use float32 or wait for native half kernels"
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // gen_cuda — port of `CodeGenerator::gen_cuda` (codegen.cpp 306-1136).
 // ---------------------------------------------------------------------------
 
 fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
+    reject_unsupported_dtypes(module)?;
     // ---- Select the function to lower (mirrors gen_cpu). ----
     let (fn_, tfn) = select_functions(module);
     let fn_ = match fn_ {
@@ -648,7 +698,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
     let mut x_id = String::new();
     for instr in &fn_.instructions {
         let op0 = input_op_of(instr);
-        if !op0.is_empty() && !ids.get(&op0).map_or(false, |i| i.is_weight) {
+        if !op0.is_empty() && !ids.get(&op0).is_some_and(|i| i.is_weight) {
             x_id = op0;
             break;
         }
@@ -669,9 +719,13 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         let mut off: u64 = 0;
         for w in &worder {
             woff.insert(w.clone(), off);
-            let n = ids
-                .get(w)
-                .map_or(1, |i| if i.static_numel > 0 { i.static_numel as u64 } else { 1 });
+            let n = ids.get(w).map_or(1, |i| {
+                if i.static_numel > 0 {
+                    i.static_numel as u64
+                } else {
+                    1
+                }
+            });
             off += n;
             weight_total += n;
         }
@@ -766,7 +820,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
     if out_cols < 0 {
         out_cols = 1;
     }
-    if !x_id.is_empty() && ids.get(&x_id).map_or(false, |i| i.is_input) {
+    if !x_id.is_empty() && ids.get(&x_id).is_some_and(|i| i.is_input) {
         if let Some(inf) = ids.get_mut(&x_id) {
             inf.cols = in_cols;
         }
@@ -848,21 +902,25 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             frees.push(format!("    cudaFree({}); {} = 0;\n", field, cap));
         };
 
-        os.push_str("// ---- Per-model device context (weights + scratch + optimizer state) ----\n");
+        os.push_str(
+            "// ---- Per-model device context (weights + scratch + optimizer state) ----\n",
+        );
         os.push_str("typedef struct NSContext {\n");
-        os.push_str("  float* d_wb = nullptr; size_t d_wb_cap = 0;   // canonical device weights\n");
+        os.push_str(
+            "  float* d_wb = nullptr; size_t d_wb_cap = 0;   // canonical device weights\n",
+        );
         os.push_str("  float* d_xi = nullptr; size_t d_xi_cap = 0;   // input upload\n");
         os.push_str("  float* d_yl = nullptr; size_t d_yl_cap = 0;   // labels upload\n");
         os.push_str("  float* d_row = nullptr; size_t d_row_cap = 0; // CE row losses\n");
         os.push_str("  float* hrow = nullptr;  size_t hrow_cap = 0;  // CE host reduction\n");
         os.push_str("  float* d_asr = nullptr; size_t d_asr_cap = 0; // attention grad scratch\n");
         if moe_e > 0 {
-            os.push_str(&format!(
-                "  uint8_t* h_moe_a = nullptr; size_t h_moe_a_cap = 0; // host expert liveness\n"
-            ));
-            os.push_str(&format!(
-                "  uint8_t* d_moe_a = nullptr; size_t d_moe_a_cap = 0; // device expert liveness\n"
-            ));
+            os.push_str(
+                "  uint8_t* h_moe_a = nullptr; size_t h_moe_a_cap = 0; // host expert liveness\n",
+            );
+            os.push_str(
+                "  uint8_t* d_moe_a = nullptr; size_t d_moe_a_cap = 0; // device expert liveness\n",
+            );
             os.push_str(&format!(
                 "  unsigned moe_cap = {}; unsigned moe_dim = {}; unsigned moe_ffn = {}; unsigned moe_k0 = {};\n",
                 moe_e, moe_d, moe_h, moe_k0
@@ -873,18 +931,21 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             ));
         }
         for id in &sorted {
-            let is_weight = ids.get(id).map_or(false, |i| i.is_weight);
+            let is_weight = ids.get(id).is_some_and(|i| i.is_weight);
             if is_weight {
                 continue;
             }
             if *id == x_id {
                 continue;
             }
-            let is_input = ids.get(id).map_or(false, |i| i.is_input);
+            let is_input = ids.get(id).is_some_and(|i| i.is_input);
             if is_input {
                 continue;
             }
-            os.push_str(&format!("  float* d_{} = nullptr; size_t d_{}_cap = 0;\n", id, id));
+            os.push_str(&format!(
+                "  float* d_{} = nullptr; size_t d_{}_cap = 0;\n",
+                id, id
+            ));
             add_free(&format!("d_{}", id), &format!("d_{}_cap", id), &mut frees);
         }
         // Dropout masks and optimizer moments are only touched by the training
@@ -918,8 +979,16 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                         "  float* d_av{} = nullptr; size_t d_av{}_cap = 0; // AdamW variance\n",
                         wt, wt
                     ));
-                    add_free(&format!("d_am{}", wt), &format!("d_am{}_cap", wt), &mut frees);
-                    add_free(&format!("d_av{}", wt), &format!("d_av{}_cap", wt), &mut frees);
+                    add_free(
+                        &format!("d_am{}", wt),
+                        &format!("d_am{}_cap", wt),
+                        &mut frees,
+                    );
+                    add_free(
+                        &format!("d_av{}", wt),
+                        &format!("d_av{}_cap", wt),
+                        &mut frees,
+                    );
                     i += 2;
                 }
             }
@@ -937,7 +1006,9 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         os.push_str("    if (hrow) { free((void*)hrow); hrow = nullptr; hrow_cap = 0; }\n");
         if moe_e > 0 {
             os.push_str("    cudaFree(d_moe_a); d_moe_a_cap = 0;\n");
-            os.push_str("    if (h_moe_a) { free((void*)h_moe_a); h_moe_a = nullptr; h_moe_a_cap = 0; }\n");
+            os.push_str(
+                "    if (h_moe_a) { free((void*)h_moe_a); h_moe_a = nullptr; h_moe_a_cap = 0; }\n",
+            );
         }
         for s in &frees {
             os.push_str(s);
@@ -967,10 +1038,10 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
 
     let id_info = |id: &str| ids.get(id).copied().unwrap_or_default();
     let dbuf = |id: &str| -> String {
-        let is_w = ids.get(id).map_or(false, |i| i.is_weight);
+        let is_w = ids.get(id).is_some_and(|i| i.is_weight);
         if is_w && woff.contains_key(id) {
             format!("(ctx->d_wb + {})", woff[id])
-        } else if ids.get(id).map_or(false, |i| i.is_input) {
+        } else if ids.get(id).is_some_and(|i| i.is_input) {
             String::from("ctx->d_xi")
         } else {
             format!("ctx->d_{}", id)
@@ -1075,7 +1146,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         let op = instr.op;
         match op {
             MLIROp::Matmul => {
-                let a = if instr.operands.len() > 0 {
+                let a = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1109,7 +1180,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Fused => {
-                let a = if instr.operands.len() > 0 {
+                let a = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1207,7 +1278,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             | MLIROp::Gelu
             | MLIROp::Silu
             | MLIROp::Identity => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1228,7 +1299,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Dropout => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1248,7 +1319,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::ElementwiseBinop => {
-                let a = if instr.operands.len() > 0 {
+                let a = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1289,7 +1360,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Layernorm | MLIROp::Softmax => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1330,7 +1401,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Transpose => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1354,7 +1425,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Concat => {
-                let a = if instr.operands.len() > 0 {
+                let a = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1411,7 +1482,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 }
             }
             MLIROp::Reshape => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1431,7 +1502,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Slice => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1441,7 +1512,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 let mut e: i64 = 0;
                 {
                     let parts: Vec<&str> = instr.attribute.split(':').collect();
-                    if parts.first().map_or(false, |p| !p.is_empty()) {
+                    if parts.first().is_some_and(|p| !p.is_empty()) {
                         if let Ok(v) = parts[0].trim().parse::<i64>() {
                             axis = v;
                         }
@@ -1501,7 +1572,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 }
             }
             MLIROp::Index | MLIROp::Scatter => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1594,7 +1665,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 }
             }
             MLIROp::LayerEmbedding => {
-                let wt = if instr.operands.len() > 0 {
+                let wt = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1623,7 +1694,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::LayerAttention => {
-                let x = if instr.operands.len() > 0 {
+                let x = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1736,7 +1807,7 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 os.push_str("    cudaFree(qs); cudaFree(ks); cudaFree(vs); cudaFree(cs); }\n");
             }
             MLIROp::LayerMoe => {
-                let x = if instr.operands.len() > 0 {
+                let x = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -1809,7 +1880,9 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
 
     if opts.emit_runtime_driver {
         os.push_str("// ---- CUDA C-ABI runtime driver ----\n");
-        os.push_str("typedef struct ns_model { float* h_w; NSContext* ctx; size_t n; } ns_model;\n");
+        os.push_str(
+            "typedef struct ns_model { float* h_w; NSContext* ctx; size_t n; } ns_model;\n",
+        );
         os.push_str("typedef struct ns_weight_desc { const char* name; size_t offset; size_t count; } ns_weight_desc;\n");
         os.push_str("typedef struct ns_weight_layout { size_t num_weights; const ns_weight_desc* desc; } ns_weight_layout;\n\n");
         os.push_str("namespace { \n");
@@ -1835,7 +1908,10 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             "static const ns_weight_layout ns_layout = {{ {}, ns_desc }};\n",
             worder.len()
         ));
-        os.push_str(&format!("static const size_t ns_weight_total = {};\n", weight_total));
+        os.push_str(&format!(
+            "static const size_t ns_weight_total = {};\n",
+            weight_total
+        ));
         os.push_str(&format!(
             "static const int64_t ns_in_cols = {}, ns_out_cols = {};\n",
             in_cols, out_cols
@@ -1847,7 +1923,9 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             ));
         }
         os.push_str("}\n\n");
-        os.push_str("extern \"C\" ns_model* ns_runtime_init(const float* weights, size_t num_floats) {\n");
+        os.push_str(
+            "extern \"C\" ns_model* ns_runtime_init(const float* weights, size_t num_floats) {\n",
+        );
         os.push_str("    if (num_floats != ns_weight_total) return nullptr;\n");
         os.push_str("    float* h_w = new float[ns_weight_total];\n");
         os.push_str("    NSContext* ctx = new NSContext();\n");
@@ -1864,10 +1942,15 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         os.push_str("}\n\n");
         os.push_str("extern \"C\" int ns_eval_infer(ns_model* m, const float* input, float* output, size_t input_numel) {\n");
         os.push_str("    if (!m || !m->ctx || !m->ctx->d_wb) return -1;\n");
-        os.push_str(&format!("    {}(m->ctx, input, output, input_numel);\n", opts.function_name));
+        os.push_str(&format!(
+            "    {}(m->ctx, input, output, input_numel);\n",
+            opts.function_name
+        ));
         os.push_str("    return 0;\n");
         os.push_str("}\n\n");
-        os.push_str("extern \"C\" size_t ns_model_output_numel(const ns_model* m, size_t input_numel) {\n");
+        os.push_str(
+            "extern \"C\" size_t ns_model_output_numel(const ns_model* m, size_t input_numel) {\n",
+        );
         os.push_str("    (void)m; return (size_t)((int64_t)input_numel / ns_in_cols) * (size_t)ns_out_cols;\n");
         os.push_str("}\n\n");
         os.push_str("extern \"C\" size_t ns_model_weight_count(const ns_model* m) {\n");
@@ -1876,7 +1959,9 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         os.push_str("extern \"C\" size_t ns_weight_count_static(void) {\n");
         os.push_str("    return ns_weight_total;\n");
         os.push_str("}\n\n");
-        os.push_str("extern \"C\" int ns_model_get_weights(const ns_model* m, float* out, size_t n) {\n");
+        os.push_str(
+            "extern \"C\" int ns_model_get_weights(const ns_model* m, float* out, size_t n) {\n",
+        );
         os.push_str("    if (!m || !m->ctx || !out || n != ns_weight_total) return -1;\n");
         os.push_str("    std::memcpy(out, m->h_w, n * sizeof(float));\n");
         os.push_str("    return 0;\n");
@@ -1898,7 +1983,9 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         os.push_str("    const unsigned magic = 0x4E534D32u; /* \"NSM2\" */\n");
         os.push_str("    if (fwrite(&magic, sizeof(magic), 1, fp) != 1 ||\n");
         os.push_str("        fwrite(&ns_weight_total, sizeof(ns_weight_total), 1, fp) != 1 ||\n");
-        os.push_str("        fwrite(m->h_w, sizeof(float), ns_weight_total, fp) != ns_weight_total) {\n");
+        os.push_str(
+            "        fwrite(m->h_w, sizeof(float), ns_weight_total, fp) != ns_weight_total) {\n",
+        );
         os.push_str("        fclose(fp); return -1;\n");
         os.push_str("    }\n");
         if moe_e > 0 {
@@ -1919,7 +2006,9 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         os.push_str("    unsigned magic = 0; size_t n = 0;\n");
         os.push_str("    if (fread(&magic, sizeof(magic), 1, fp) != 1 ||\n");
         os.push_str("        fread(&n, sizeof(n), 1, fp) != 1 ||\n");
-        os.push_str("        (magic != 0x4E534D31u && magic != 0x4E534D32u) || n != ns_weight_total ||\n");
+        os.push_str(
+            "        (magic != 0x4E534D31u && magic != 0x4E534D32u) || n != ns_weight_total ||\n",
+        );
         os.push_str("        fread(m->h_w, sizeof(float), n, fp) != n) {\n");
         os.push_str("        fclose(fp); return -1;\n");
         os.push_str("    }\n");
@@ -1969,9 +2058,13 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             os.push_str("      for (size_t k = 0; k < ns_moe_dim; k++)\n");
             os.push_str("        m->h_w[ns_moe_off_g + k * ns_moe_cap + e] = m->h_w[ns_moe_off_g + k * ns_moe_cap + (size_t)src];\n");
             os.push_str("      for (size_t q = 0; q < ns_moe_dim * ns_moe_ffn; q++)\n");
-            os.push_str("        m->h_w[ns_moe_off_e1 + g2 + q] = m->h_w[ns_moe_off_e1 + s1 + q];\n");
+            os.push_str(
+                "        m->h_w[ns_moe_off_e1 + g2 + q] = m->h_w[ns_moe_off_e1 + s1 + q];\n",
+            );
             os.push_str("      for (size_t q = 0; q < ns_moe_ffn * ns_moe_dim; q++)\n");
-            os.push_str("        m->h_w[ns_moe_off_e2 + g3 + q] = m->h_w[ns_moe_off_e2 + s2 + q];\n");
+            os.push_str(
+                "        m->h_w[ns_moe_off_e2 + g3 + q] = m->h_w[ns_moe_off_e2 + s2 + q];\n",
+            );
             os.push_str("      m->ctx->h_moe_a[e] = 1;\n");
             os.push_str("      m->ctx->moe_count++;\n");
             os.push_str("      n--;\n");
@@ -2004,7 +2097,9 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             os.push_str("    return m->ctx->moe_count;\n");
             os.push_str("}\n\n");
             os.push_str("extern \"C\" size_t ns_expert_kill(ns_model* m, int k) {\n");
-            os.push_str("    if (!m || !m->ctx || k < 0 || k >= (int)ns_moe_cap || !m->ctx->h_moe_a[k])\n");
+            os.push_str(
+                "    if (!m || !m->ctx || k < 0 || k >= (int)ns_moe_cap || !m->ctx->h_moe_a[k])\n",
+            );
             os.push_str("        return m && m->ctx ? m->ctx->moe_count : 0;\n");
             os.push_str("    m->ctx->h_moe_a[k] = 0;\n");
             os.push_str("    m->ctx->moe_count--;\n");
@@ -2014,14 +2109,23 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         }
 
         if let Some(t) = tfn {
-            os.push_str("\n// ---- CUDA training core (forward + backward + optimizer on device) ----\n");
+            os.push_str(
+                "\n// ---- CUDA training core (forward + backward + optimizer on device) ----\n",
+            );
             if opts.enable_fp16 {
                 os.push_str("// fp16: training core using half precision (NS_DTYPE __half)\n");
             }
-            os.push_str(&emit_train_core_cuda(t, in_cols, out_cols, opts.enable_fp16)?);
-            os.push_str("\n");
+            os.push_str(&emit_train_core_cuda(
+                t,
+                in_cols,
+                out_cols,
+                opts.enable_fp16,
+            )?);
+            os.push('\n');
             os.push_str(&lr_schedule_source());
-            os.push_str("\nextern \"C\" int ns_runtime_train_step(ns_model* m, const float* input,\n");
+            os.push_str(
+                "\nextern \"C\" int ns_runtime_train_step(ns_model* m, const float* input,\n",
+            );
             os.push_str("                                        const float* labels, size_t input_numel,\n");
             os.push_str("                                        float* loss_out, float lr) {\n");
             os.push_str("    if (!m || !m->ctx || !m->ctx->d_wb) return -1;\n");
@@ -2032,7 +2136,9 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             os.push_str("    return 0;\n");
             os.push_str("}\n\n");
             os.push_str("extern \"C\" int ns_objective_loss(ns_model* m, const float* input,\n");
-            os.push_str("                                   const float* labels, size_t input_numel,\n");
+            os.push_str(
+                "                                   const float* labels, size_t input_numel,\n",
+            );
             os.push_str("                                   float* loss_out) {\n");
             os.push_str("    if (!m || !m->ctx || !m->ctx->d_wb) return -1;\n");
             os.push_str("    ns_train_core(m->ctx, input, input_numel, labels, m->h_w, (float*)0, loss_out, 0.f, 0);\n");
@@ -2052,7 +2158,12 @@ fn gen_cuda(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
 // optimizer on device) as a C-ABI slave of ns_runtime_train_step.
 // ---------------------------------------------------------------------------
 
-fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_fp16: bool) -> NsResult<String> {
+fn emit_train_core_cuda(
+    tfn: &MLIRFunction,
+    in_cols: i64,
+    out_cols: i64,
+    enable_fp16: bool,
+) -> NsResult<String> {
     let mut ids: BTreeMap<String, CuIdInfo> = BTreeMap::new();
     fill_cu_ids(tfn, &mut ids);
 
@@ -2063,14 +2174,14 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
     for instr in &tfn.instructions {
         if instr.op == MLIROp::LayerEmbedding
             && instr.operands.len() >= 2
-            && !ids.get(&instr.operands[1]).map_or(false, |i| i.is_weight)
+            && !ids.get(&instr.operands[1]).is_some_and(|i| i.is_weight)
             && x_id.is_empty()
         {
             x_id = instr.operands[1].clone();
         }
         if instr.op == MLIROp::Matmul
             && instr.operands.len() >= 2
-            && !ids.get(&instr.operands[0]).map_or(false, |i| i.is_weight)
+            && !ids.get(&instr.operands[0]).is_some_and(|i| i.is_weight)
             && x_id.is_empty()
         {
             x_id = instr.operands[0].clone();
@@ -2094,9 +2205,13 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
         let mut off: u64 = 0;
         for wt in &worder_t {
             woff.insert(wt.clone(), off);
-            let n = ids
-                .get(wt)
-                .map_or(1, |i| if i.static_numel > 0 { i.static_numel as u64 } else { 1 });
+            let n = ids.get(wt).map_or(1, |i| {
+                if i.static_numel > 0 {
+                    i.static_numel as u64
+                } else {
+                    1
+                }
+            });
             off += n;
             weight_total += n;
         }
@@ -2117,7 +2232,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
         if id == y_id {
             return String::from("ctx->d_yl");
         }
-        let is_w = ids.get(id).map_or(false, |i| i.is_weight);
+        let is_w = ids.get(id).is_some_and(|i| i.is_weight);
         if is_w && woff.contains_key(id) {
             return format!("(ctx->d_wb + {})", woff[id]);
         }
@@ -2194,8 +2309,12 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
     os.push_str(&format!("  const int M = (int)(nx / {});\n", k1));
     os.push_str("  if (M <= 0) return;\n");
     os.push_str(&format!("  const size_t ny = (size_t)M * {};\n", c));
-    os.push_str("  if (ns_cu_reserve(&ctx->d_xi, &ctx->d_xi_cap, nx * sizeof(float), 0)) return;\n");
-    os.push_str("  if (ns_cu_reserve(&ctx->d_yl, &ctx->d_yl_cap, ny * sizeof(float), 0)) return;\n");
+    os.push_str(
+        "  if (ns_cu_reserve(&ctx->d_xi, &ctx->d_xi_cap, nx * sizeof(float), 0)) return;\n",
+    );
+    os.push_str(
+        "  if (ns_cu_reserve(&ctx->d_yl, &ctx->d_yl_cap, ny * sizeof(float), 0)) return;\n",
+    );
     os.push_str("  cudaMemcpy(ctx->d_xi, x, nx * sizeof(float), cudaMemcpyHostToDevice);\n");
     os.push_str("  cudaMemcpy(ctx->d_yl, y, ny * sizeof(float), cudaMemcpyHostToDevice);\n");
 
@@ -2207,7 +2326,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
         let op = instr.op;
         match op {
             MLIROp::Matmul => {
-                let a = if instr.operands.len() > 0 {
+                let a = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2247,7 +2366,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
             | MLIROp::Gelu
             | MLIROp::Silu
             | MLIROp::Identity => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2268,7 +2387,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 ));
             }
             MLIROp::LayerEmbedding => {
-                let wt = if instr.operands.len() > 0 {
+                let wt = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2296,7 +2415,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 ));
             }
             MLIROp::ElementwiseBinop => {
-                let a = if instr.operands.len() > 0 {
+                let a = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2340,7 +2459,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 }
             }
             MLIROp::LayerMoe => {
-                let x = if instr.operands.len() > 0 {
+                let x = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2360,7 +2479,11 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 } else {
                     String::new()
                 };
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let e: i64 = if instr.attribute.is_empty() {
                     4
                 } else {
@@ -2389,7 +2512,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 ));
             }
             MLIROp::LayerAttention => {
-                let x = if instr.operands.len() > 0 {
+                let x = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2414,7 +2537,11 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 } else {
                     String::new()
                 };
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let h: i64 = if instr.attribute.is_empty() {
                     1
                 } else {
@@ -2424,7 +2551,8 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                     "  if (ns_cu_reserve(&ctx->d_{}, &ctx->d_{}_cap, (size_t)M * {} * sizeof(float), 0)) return;\n",
                     id, id, d
                 ));
-                fwd_text.push_str("  { float* qs = 0; float* ks = 0; float* vs = 0; float* cs = 0;\n");
+                fwd_text
+                    .push_str("  { float* qs = 0; float* ks = 0; float* vs = 0; float* cs = 0;\n");
                 fwd_text.push_str(&format!(
                     "    if (cudaMalloc(&qs, (size_t)M * {} * sizeof(float)) ||\n",
                     d
@@ -2487,10 +2615,11 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                     d,
                     d
                 ));
-                fwd_text.push_str("    cudaFree(qs); cudaFree(ks); cudaFree(vs); cudaFree(cs); }\n");
+                fwd_text
+                    .push_str("    cudaFree(qs); cudaFree(ks); cudaFree(vs); cudaFree(cs); }\n");
             }
             MLIROp::Layernorm | MLIROp::Softmax => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2522,7 +2651,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 }
             }
             MLIROp::Dropout => {
-                let in_ = if instr.operands.len() > 0 {
+                let in_ = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2566,7 +2695,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 fwd_text.push_str("  }\n");
             }
             MLIROp::CrossEntropy => {
-                let preds = if instr.operands.len() > 0 {
+                let preds = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2587,7 +2716,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 fwd_text.push_str("  if (loss_out) *loss_out = loss;\n");
             }
             MLIROp::LossGrad => {
-                let preds = if instr.operands.len() > 0 {
+                let preds = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2605,7 +2734,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 ));
             }
             MLIROp::MatmulGradA => {
-                let dc = if instr.operands.len() > 0 {
+                let dc = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2638,7 +2767,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 ));
             }
             MLIROp::MatmulGradW => {
-                let a = if instr.operands.len() > 0 {
+                let a = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2677,7 +2806,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 ));
             }
             MLIROp::BinopGrad => {
-                let dc = if instr.operands.len() > 0 {
+                let dc = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2702,7 +2831,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                     opcode = 3;
                 }
                 let which = if instr.int_attr != 0 {
-                    2 * opcode | 1
+                    (2 * opcode) | 1
                 } else {
                     2 * opcode
                 };
@@ -2724,7 +2853,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 }
             }
             MLIROp::EmbeddingGradW => {
-                let dout = if instr.operands.len() > 0 {
+                let dout = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2762,7 +2891,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 ));
             }
             MLIROp::MoeGradX | MLIROp::MoeGradWg | MLIROp::MoeGradWe1 | MLIROp::MoeGradWe2 => {
-                let dout = if instr.operands.len() > 0 {
+                let dout = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2787,7 +2916,11 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 } else {
                     String::new()
                 };
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let e: i64 = if instr.attribute.is_empty() {
                     4
                 } else {
@@ -2858,7 +2991,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
             | MLIROp::AttentionGradWk
             | MLIROp::AttentionGradWv
             | MLIROp::AttentionGradWo => {
-                let dout = if instr.operands.len() > 0 {
+                let dout = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2888,7 +3021,11 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 } else {
                     String::new()
                 };
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let h: i64 = if instr.attribute.is_empty() {
                     1
                 } else {
@@ -2956,7 +3093,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 ));
             }
             MLIROp::LayernormGrad => {
-                let dout = if instr.operands.len() > 0 {
+                let dout = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -2982,7 +3119,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                 ));
             }
             MLIROp::ActivationGrad => {
-                let dout = if instr.operands.len() > 0 {
+                let dout = if !instr.operands.is_empty() {
                     instr.operands[0].clone()
                 } else {
                     String::new()
@@ -3046,7 +3183,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                             wt,
                             bufv(&g),
                             n,
-                            fmt_float9(optim::K_MUON_MOMENTUM as f32)
+                            fmt_float9(optim::K_MUON_MOMENTUM)
                         ));
                         train_text.push_str(&format!(
                             "    ns_orthonom_kernel<<<1, 1>>>(ctx->d_am{}, {}, {});\n",
@@ -3062,7 +3199,7 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                             bufv(&wt),
                             wt,
                             n,
-                            fmt_float9(optim::K_MUON_DECAY as f32)
+                            fmt_float9(optim::K_MUON_DECAY)
                         ));
                     } else {
                         train_text.push_str(&format!(
@@ -3076,8 +3213,8 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                         train_text.push_str("    size_t t = ++ctx->adam_step;\n");
                         train_text.push_str(&format!(
                             "    float b1t = 1.f - powf({}f, (float)t), b2t = 1.f - powf({}f, (float)t);\n",
-                            fmt_float9(optim::K_ADAMW_BETA1 as f32),
-                            fmt_float9(optim::K_ADAMW_BETA2 as f32)
+                            fmt_float9(optim::K_ADAMW_BETA1),
+                            fmt_float9(optim::K_ADAMW_BETA2)
                         ));
                         train_text.push_str(&format!(
                             "    NS_LAUNCH1(ns_adamw_kernel, {}, {}, {}, ctx->d_am{}, ctx->d_av{}, {}, lr, b1t, b2t, {}f, {}f, {}f, {}f, {}f, {}f * lr);\n",
@@ -3087,12 +3224,12 @@ fn emit_train_core_cuda(tfn: &MLIRFunction, in_cols: i64, out_cols: i64, enable_
                             wt,
                             wt,
                             n,
-                            fmt_float9(optim::K_ADAMW_BETA1 as f32),
-                            fmt_float9(optim::K_ADAMW_BETA2 as f32),
-                            fmt_float9(optim::K_ONE_MINUS_BETA1 as f32),
-                            fmt_float9(optim::K_ONE_MINUS_BETA2 as f32),
-                            fmt_float9(optim::K_ADAMW_EPS as f32),
-                            fmt_float9(optim::K_ADAMW_DECAY as f32)
+                            fmt_float9(optim::K_ADAMW_BETA1),
+                            fmt_float9(optim::K_ADAMW_BETA2),
+                            fmt_float9(optim::K_ONE_MINUS_BETA1),
+                            fmt_float9(optim::K_ONE_MINUS_BETA2),
+                            fmt_float9(optim::K_ADAMW_EPS),
+                            fmt_float9(optim::K_ADAMW_DECAY)
                         ));
                     }
                     train_text.push_str("  }\n");
@@ -3131,14 +3268,14 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
     for instr in &tfn.instructions {
         if instr.op == MLIROp::LayerEmbedding
             && instr.operands.len() >= 2
-            && !ids.get(&instr.operands[1]).map_or(false, |i| i.is_weight)
+            && !ids.get(&instr.operands[1]).is_some_and(|i| i.is_weight)
             && x_id.is_empty()
         {
             x_id = instr.operands[1].clone();
         }
         if instr.op == MLIROp::Matmul
             && instr.operands.len() >= 2
-            && !ids.get(&instr.operands[0]).map_or(false, |i| i.is_weight)
+            && !ids.get(&instr.operands[0]).is_some_and(|i| i.is_weight)
             && x_id.is_empty()
         {
             x_id = instr.operands[0].clone();
@@ -3183,10 +3320,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
             if (instr.op == MLIROp::Matmul || instr.op == MLIROp::Fused)
                 && instr.operands.len() >= 2
             {
-                let inf = ids
-                    .get(&instr.operands[1])
-                    .copied()
-                    .unwrap_or_default();
+                let inf = ids.get(&instr.operands[1]).copied().unwrap_or_default();
                 if inf.cols > 0 {
                     wcols.insert(ida.clone(), inf.cols);
                 }
@@ -3223,11 +3357,14 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
     os.push_str("                              const float* w, float* wout, float* loss_out,\n");
     os.push_str("                              float lr, int train_mode) {\n");
     os.push_str("  (void)y;\n");
-    for (id, _inf) in &ids {
+    for id in ids.keys() {
         if id == &x_id || id == &y_id {
             continue;
         }
-        os.push_str(&format!("  std::vector<float>& buf_{} = ctx->buf_{};\n", id, id));
+        os.push_str(&format!(
+            "  std::vector<float>& buf_{} = ctx->buf_{};\n",
+            id, id
+        ));
     }
     for instr in &tfn.instructions {
         if instr.op == MLIROp::Dropout {
@@ -3240,10 +3377,19 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
     {
         let mut off: u64 = 0;
         for wt in &worder_t {
-            let n = ids
-                .get(wt)
-                .map_or(1, |i| if i.static_numel > 0 { i.static_numel } else { 1 });
-            os.push_str(&format!("  buf_{}.assign(w + {}, w + {});\n", wt, off, off + n as u64));
+            let n = ids.get(wt).map_or(1, |i| {
+                if i.static_numel > 0 {
+                    i.static_numel
+                } else {
+                    1
+                }
+            });
+            os.push_str(&format!(
+                "  buf_{}.assign(w + {}, w + {});\n",
+                wt,
+                off,
+                off + n as u64
+            ));
             off += n as u64;
         }
     }
@@ -3255,7 +3401,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
         let id = instr.result_id.clone();
         match instr.op {
             MLIROp::Matmul => {
-                let a = instr.operands.get(0).cloned().unwrap_or_default();
+                let a = instr.operands.first().cloned().unwrap_or_default();
                 let b = instr.operands.get(1).cloned().unwrap_or_default();
                 let inf = ids.get(&b).copied().unwrap_or_default();
                 let ks = inf.rows;
@@ -3267,7 +3413,10 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                     ));
                 }
                 fwd_body.push_str(&format!("  {{ int64_t K = {}, N = {};\n", ks, ns_));
-                fwd_body.push_str(&format!("    int64_t M = (int64_t)({}) / K;\n", numel_of(&a)));
+                fwd_body.push_str(&format!(
+                    "    int64_t M = (int64_t)({}) / K;\n",
+                    numel_of(&a)
+                ));
                 fwd_body.push_str(&format!("    buf_{}.resize((size_t)(M * N));\n", id));
                 fwd_body.push_str(&format!(
                     "    ns_matmul({}, buf_{}.data(), buf_{}.data(), M, K, N); }}\n",
@@ -3284,7 +3433,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
             | MLIROp::Gelu
             | MLIROp::Silu
             | MLIROp::Identity => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
+                let inp = instr.operands.first().cloned().unwrap_or_default();
                 let code = match instr.op {
                     MLIROp::Relu => 1,
                     MLIROp::LeakyRelu => 2,
@@ -3303,12 +3452,19 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::LayerEmbedding => {
-                let wt = instr.operands.get(0).cloned().unwrap_or_default();
+                let wt = instr.operands.first().cloned().unwrap_or_default();
                 let idx = instr.operands.get(1).cloned().unwrap_or_default();
-                let v = ids.get(&wt).map_or(1, |i| if i.rows > 0 { i.rows } else { 1 });
-                let d = ids.get(&wt).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                let v = ids
+                    .get(&wt)
+                    .map_or(1, |i| if i.rows > 0 { i.rows } else { 1 });
+                let d = ids
+                    .get(&wt)
+                    .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                 fwd_body.push_str(&format!("  {{ int64_t n_idx = {};\n", numel_of(&idx)));
-                fwd_body.push_str(&format!("    buf_{}.resize((size_t)(n_idx * {}));\n", id, d));
+                fwd_body.push_str(&format!(
+                    "    buf_{}.resize((size_t)(n_idx * {}));\n",
+                    id, d
+                ));
                 fwd_body.push_str(&format!(
                     "    ns_embedding({}, {}, buf_{}.data(), n_idx, {}, {}); }}\n",
                     src_of(&wt),
@@ -3319,7 +3475,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::ElementwiseBinop => {
-                let a = instr.operands.get(0).cloned().unwrap_or_default();
+                let a = instr.operands.first().cloned().unwrap_or_default();
                 let b = instr.operands.get(1).cloned().unwrap_or_default();
                 let code = if instr.attribute == "-" {
                     1
@@ -3344,11 +3500,15 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 }
             }
             MLIROp::LayerMoe => {
-                let x = instr.operands.get(0).cloned().unwrap_or_default();
+                let x = instr.operands.first().cloned().unwrap_or_default();
                 let wg = instr.operands.get(1).cloned().unwrap_or_default();
                 let we = instr.operands.get(2).cloned().unwrap_or_default();
                 let we2 = instr.operands.get(3).cloned().unwrap_or_default();
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let e: i64 = if instr.attribute.is_empty() {
                     4
                 } else {
@@ -3378,12 +3538,16 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::LayerAttention => {
-                let x = instr.operands.get(0).cloned().unwrap_or_default();
+                let x = instr.operands.first().cloned().unwrap_or_default();
                 let wq = instr.operands.get(1).cloned().unwrap_or_default();
                 let wk = instr.operands.get(2).cloned().unwrap_or_default();
                 let wv = instr.operands.get(3).cloned().unwrap_or_default();
                 let wo = instr.operands.get(4).cloned().unwrap_or_default();
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let h: i64 = if instr.attribute.is_empty() {
                     1
                 } else {
@@ -3420,7 +3584,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 fwd_body.push_str(&format!("        BS, {}, {}, S, {}); }}\n", d, h, causal));
             }
             MLIROp::Layernorm | MLIROp::Softmax => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
+                let inp = instr.operands.first().cloned().unwrap_or_default();
                 let mut last = train_row_dims(&inp);
                 if last <= 0 {
                     last = 1;
@@ -3428,7 +3592,10 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 fwd_body.push_str(&format!("  {{ size_t zn = {};\n", numel_of(&inp)));
                 fwd_body.push_str(&format!("    buf_{}.resize(zn);\n", id));
                 fwd_body.push_str(&format!("    const float* src = {};\n", src_of(&inp)));
-                fwd_body.push_str(&format!("    for (size_t i = 0; i < zn; i++) buf_{}[i] = src[i];\n", id));
+                fwd_body.push_str(&format!(
+                    "    for (size_t i = 0; i < zn; i++) buf_{}[i] = src[i];\n",
+                    id
+                ));
                 if instr.op == MLIROp::Layernorm {
                     fwd_body.push_str(&format!(
                         "    ns_layernorm(buf_{}.data(), buf_{}.size(), {}); }}\n",
@@ -3442,7 +3609,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 }
             }
             MLIROp::Dropout => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
+                let inp = instr.operands.first().cloned().unwrap_or_default();
                 let mut rate = instr.float_attr;
                 if rate < 0.0 {
                     rate = 0.0;
@@ -3456,20 +3623,31 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 fwd_body.push_str(&format!("    buf_dm_{}.resize(zn);\n", id));
                 fwd_body.push_str(&format!("    const float* src = {};\n", src_of(&inp)));
                 fwd_body.push_str("    if (train_mode) {\n");
-                fwd_body.push_str(&format!("      std::bernoulli_distribution keep(1.0 - {});\n", r));
-                fwd_body.push_str(&format!("      const float scale = 1.0f / (float)(1.0 - {});\n", r));
+                fwd_body.push_str(&format!(
+                    "      std::bernoulli_distribution keep(1.0 - {});\n",
+                    r
+                ));
+                fwd_body.push_str(&format!(
+                    "      const float scale = 1.0f / (float)(1.0 - {});\n",
+                    r
+                ));
                 fwd_body.push_str(&format!(
                     "      for (size_t i = 0; i < zn; i++) {{ float m = keep(ctx->rng) ? scale : 0.f; buf_dm_{}[i] = m; buf_{}[i] = src[i] * m; }}\n",
                     id, id
                 ));
                 fwd_body.push_str("    } else {\n");
-                fwd_body.push_str(&format!("      for (size_t i = 0; i < zn; i++) buf_{}[i] = src[i];\n", id));
+                fwd_body.push_str(&format!(
+                    "      for (size_t i = 0; i < zn; i++) buf_{}[i] = src[i];\n",
+                    id
+                ));
                 fwd_body.push_str("    }\n");
                 fwd_body.push_str("  }\n");
             }
             MLIROp::CrossEntropy => {
-                let preds = instr.operands.get(0).cloned().unwrap_or_default();
-                let c = ids.get(&preds).map_or(in_cols, |i| if i.cols > 0 { i.cols } else { in_cols });
+                let preds = instr.operands.first().cloned().unwrap_or_default();
+                let c = ids
+                    .get(&preds)
+                    .map_or(in_cols, |i| if i.cols > 0 { i.cols } else { in_cols });
                 fwd_body.push_str(&format!("  {{ buf_{}.assign(1, 0.f);\n", id));
                 fwd_body.push_str(&format!(
                     "    buf_{}[0] = ns_cross_entropy(buf_{}.data(), y, buf_{}.size(), {}); }}\n",
@@ -3477,8 +3655,10 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::LossGrad => {
-                let preds = instr.operands.get(0).cloned().unwrap_or_default();
-                let c = ids.get(&preds).map_or(in_cols, |i| if i.cols > 0 { i.cols } else { in_cols });
+                let preds = instr.operands.first().cloned().unwrap_or_default();
+                let c = ids
+                    .get(&preds)
+                    .map_or(in_cols, |i| if i.cols > 0 { i.cols } else { in_cols });
                 train_body.push_str(&format!("  {{ size_t zn = buf_{}.size();\n", preds));
                 train_body.push_str(&format!("    buf_{}.resize(zn);\n", id));
                 train_body.push_str(&format!(
@@ -3487,7 +3667,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::MatmulGradA => {
-                let dc = instr.operands.get(0).cloned().unwrap_or_default();
+                let dc = instr.operands.first().cloned().unwrap_or_default();
                 let b = instr.operands.get(1).cloned().unwrap_or_default();
                 let inf = ids.get(&b).copied().unwrap_or_default();
                 let ks = inf.rows;
@@ -3499,7 +3679,10 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                     ));
                 }
                 train_body.push_str(&format!("  {{ int64_t K = {}, N = {};\n", ks, ns_));
-                train_body.push_str(&format!("    int64_t M = (int64_t)(buf_{}.size()) / N;\n", dc));
+                train_body.push_str(&format!(
+                    "    int64_t M = (int64_t)(buf_{}.size()) / N;\n",
+                    dc
+                ));
                 train_body.push_str(&format!("    buf_{}.resize((size_t)(M * K));\n", id));
                 train_body.push_str(&format!(
                     "    ns_matmul_grad_a(buf_{}.data(), buf_{}.data(), buf_{}.data(), M, K, N); }}\n",
@@ -3507,7 +3690,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::MatmulGradW => {
-                let a = instr.operands.get(0).cloned().unwrap_or_default();
+                let a = instr.operands.first().cloned().unwrap_or_default();
                 let dc = instr.operands.get(1).cloned().unwrap_or_default();
                 let b = instr.operands.get(2).cloned().unwrap_or_default();
                 let inf = ids.get(&b).copied().unwrap_or_default();
@@ -3520,7 +3703,10 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                     ));
                 }
                 train_body.push_str(&format!("  {{ int64_t K = {}, N = {};\n", ks, ns_));
-                train_body.push_str(&format!("    int64_t M = (int64_t)(buf_{}.size()) / N;\n", dc));
+                train_body.push_str(&format!(
+                    "    int64_t M = (int64_t)(buf_{}.size()) / N;\n",
+                    dc
+                ));
                 train_body.push_str(&format!("    buf_{}.resize((size_t)(K * N));\n", id));
                 train_body.push_str(&format!(
                     "    ns_matmul_grad_w({}, buf_{}.data(), buf_{}.data(), M, K, N); }}\n",
@@ -3530,7 +3716,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::BinopGrad => {
-                let dc = instr.operands.get(0).cloned().unwrap_or_default();
+                let dc = instr.operands.first().cloned().unwrap_or_default();
                 let a = instr.operands.get(1).cloned().unwrap_or_default();
                 let b = instr.operands.get(2).cloned().unwrap_or_default();
                 let opcode = if instr.attribute == "-" {
@@ -3543,7 +3729,7 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                     0
                 };
                 let which = if instr.int_attr != 0 {
-                    2 * opcode | 1
+                    (2 * opcode) | 1
                 } else {
                     2 * opcode
                 };
@@ -3557,13 +3743,20 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 }
             }
             MLIROp::EmbeddingGradW => {
-                let dout = instr.operands.get(0).cloned().unwrap_or_default();
+                let dout = instr.operands.first().cloned().unwrap_or_default();
                 let idx = instr.operands.get(1).cloned().unwrap_or_default();
                 let wt = instr.operands.get(2).cloned().unwrap_or_default();
-                let v = ids.get(&wt).map_or(1, |i| if i.rows > 0 { i.rows } else { 1 });
-                let d = ids.get(&wt).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                let v = ids
+                    .get(&wt)
+                    .map_or(1, |i| if i.rows > 0 { i.rows } else { 1 });
+                let d = ids
+                    .get(&wt)
+                    .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                 train_body.push_str(&format!("  {{ size_t M = buf_{}.size() / {};\n", dout, d));
-                train_body.push_str(&format!("    buf_{}.resize((size_t)({} * {}));\n", id, v, d));
+                train_body.push_str(&format!(
+                    "    buf_{}.resize((size_t)({} * {}));\n",
+                    id, v, d
+                ));
                 train_body.push_str(&format!(
                     "    ns_embedding_grad_w(buf_{}.data(), {}, buf_{}.data(), M, {}, {}); }}\n",
                     dout,
@@ -3574,12 +3767,16 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::MoeGradX => {
-                let dout = instr.operands.get(0).cloned().unwrap_or_default();
+                let dout = instr.operands.first().cloned().unwrap_or_default();
                 let xo = instr.operands.get(1).cloned().unwrap_or_default();
                 let wg = instr.operands.get(2).cloned().unwrap_or_default();
                 let we1 = instr.operands.get(3).cloned().unwrap_or_default();
                 let we2 = instr.operands.get(4).cloned().unwrap_or_default();
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let e: i64 = if instr.attribute.is_empty() {
                     4
                 } else {
@@ -3613,12 +3810,16 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::MoeGradWg => {
-                let dout = instr.operands.get(0).cloned().unwrap_or_default();
+                let dout = instr.operands.first().cloned().unwrap_or_default();
                 let xo = instr.operands.get(1).cloned().unwrap_or_default();
                 let wg = instr.operands.get(2).cloned().unwrap_or_default();
                 let we1 = instr.operands.get(3).cloned().unwrap_or_default();
                 let we2 = instr.operands.get(4).cloned().unwrap_or_default();
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let e: i64 = if instr.attribute.is_empty() {
                     4
                 } else {
@@ -3651,12 +3852,16 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::MoeGradWe1 => {
-                let dout = instr.operands.get(0).cloned().unwrap_or_default();
+                let dout = instr.operands.first().cloned().unwrap_or_default();
                 let xo = instr.operands.get(1).cloned().unwrap_or_default();
                 let wg = instr.operands.get(2).cloned().unwrap_or_default();
                 let we1 = instr.operands.get(3).cloned().unwrap_or_default();
                 let we2 = instr.operands.get(4).cloned().unwrap_or_default();
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let e: i64 = if instr.attribute.is_empty() {
                     4
                 } else {
@@ -3689,12 +3894,16 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::MoeGradWe2 => {
-                let dout = instr.operands.get(0).cloned().unwrap_or_default();
+                let dout = instr.operands.first().cloned().unwrap_or_default();
                 let xo = instr.operands.get(1).cloned().unwrap_or_default();
                 let wg = instr.operands.get(2).cloned().unwrap_or_default();
                 let we1 = instr.operands.get(3).cloned().unwrap_or_default();
                 let we2 = instr.operands.get(4).cloned().unwrap_or_default();
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let e: i64 = if instr.attribute.is_empty() {
                     4
                 } else {
@@ -3731,13 +3940,17 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
             | MLIROp::AttentionGradWk
             | MLIROp::AttentionGradWv
             | MLIROp::AttentionGradWo => {
-                let dout = instr.operands.get(0).cloned().unwrap_or_default();
+                let dout = instr.operands.first().cloned().unwrap_or_default();
                 let xo = instr.operands.get(1).cloned().unwrap_or_default();
                 let wq = instr.operands.get(2).cloned().unwrap_or_default();
                 let wk = instr.operands.get(3).cloned().unwrap_or_default();
                 let wv = instr.operands.get(4).cloned().unwrap_or_default();
                 let wo = instr.operands.get(5).cloned().unwrap_or_default();
-                let d = if instr.int_attr > 0 { instr.int_attr } else { 1 };
+                let d = if instr.int_attr > 0 {
+                    instr.int_attr
+                } else {
+                    1
+                };
                 let h: i64 = if instr.attribute.is_empty() {
                     1
                 } else {
@@ -3770,20 +3983,35 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                     src_of(&wo)
                 ));
                 if instr.op == MLIROp::AttentionGradX {
-                    train_body.push_str(&format!("        {}, nullptr, nullptr, nullptr, nullptr,\n", tgt));
+                    train_body.push_str(&format!(
+                        "        {}, nullptr, nullptr, nullptr, nullptr,\n",
+                        tgt
+                    ));
                 } else if instr.op == MLIROp::AttentionGradWq {
-                    train_body.push_str(&format!("        nullptr, {}, nullptr, nullptr, nullptr,\n", tgt));
+                    train_body.push_str(&format!(
+                        "        nullptr, {}, nullptr, nullptr, nullptr,\n",
+                        tgt
+                    ));
                 } else if instr.op == MLIROp::AttentionGradWk {
-                    train_body.push_str(&format!("        nullptr, nullptr, {}, nullptr, nullptr,\n", tgt));
+                    train_body.push_str(&format!(
+                        "        nullptr, nullptr, {}, nullptr, nullptr,\n",
+                        tgt
+                    ));
                 } else if instr.op == MLIROp::AttentionGradWv {
-                    train_body.push_str(&format!("        nullptr, nullptr, nullptr, {}, nullptr,\n", tgt));
+                    train_body.push_str(&format!(
+                        "        nullptr, nullptr, nullptr, {}, nullptr,\n",
+                        tgt
+                    ));
                 } else {
-                    train_body.push_str(&format!("        nullptr, nullptr, nullptr, nullptr, {},\n", tgt));
+                    train_body.push_str(&format!(
+                        "        nullptr, nullptr, nullptr, nullptr, {},\n",
+                        tgt
+                    ));
                 }
                 train_body.push_str(&format!("        BS, {}, {}, BS, {}); }}\n", d, h, causal));
             }
             MLIROp::LayernormGrad => {
-                let dout = instr.operands.get(0).cloned().unwrap_or_default();
+                let dout = instr.operands.first().cloned().unwrap_or_default();
                 let act_in = instr.operands.get(1).cloned().unwrap_or_default();
                 let mut last = train_row_dims(&act_in);
                 if last <= 0 {
@@ -3797,13 +4025,16 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 ));
             }
             MLIROp::ActivationGrad => {
-                let dout = instr.operands.get(0).cloned().unwrap_or_default();
+                let dout = instr.operands.first().cloned().unwrap_or_default();
                 let act_in = instr.operands.get(1).cloned().unwrap_or_default();
                 if instr.attribute == "dropout" {
                     train_body.push_str(&format!("  {{ size_t zn = buf_{}.size();\n", dout));
                     train_body.push_str(&format!("    buf_{}.resize(zn);\n", id));
                     train_body.push_str(&format!("    const float* dg = buf_{}.data();\n", dout));
-                    train_body.push_str(&format!("    const float* dm = buf_dm_{}.data();\n", act_in));
+                    train_body.push_str(&format!(
+                        "    const float* dm = buf_dm_{}.data();\n",
+                        act_in
+                    ));
                     train_body.push_str(&format!(
                         "    for (size_t i = 0; i < zn; i++) buf_{}[i] = dg[i] * dm[i]; }}\n",
                         id
@@ -3831,8 +4062,12 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                 while i + 1 < instr.operands.len() {
                     let wt = instr.operands[i].clone();
                     let g = instr.operands[i + 1].clone();
-                    let r = ids.get(&wt).map_or(1, |inf| if inf.rows > 0 { inf.rows } else { 1 });
-                    let c = ids.get(&wt).map_or(1, |inf| if inf.cols > 0 { inf.cols } else { 1 });
+                    let r = ids
+                        .get(&wt)
+                        .map_or(1, |inf| if inf.rows > 0 { inf.rows } else { 1 });
+                    let c = ids
+                        .get(&wt)
+                        .map_or(1, |inf| if inf.cols > 0 { inf.cols } else { 1 });
                     let n = r * c;
                     let use_muon = r > 1 && c > 1 && std::cmp::min(r, c) >= 8;
                     opt_body.push_str(&format!("  {{ size_t n_ = {};\n", n));
@@ -3891,7 +4126,8 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
                             fmt_float9(optim::K_ADAMW_BETA2),
                             fmt_float9(optim::K_ONE_MINUS_BETA2)
                         ));
-                        opt_body.push_str("      float mh = st_am[i] / b1t, vh = st_av[i] / b2t;\n");
+                        opt_body
+                            .push_str("      float mh = st_am[i] / b1t, vh = st_av[i] / b2t;\n");
                         opt_body.push_str(&format!(
                             "      buf_{}[i] -= (lr * mh / (sqrtf(vh) + {}f)) + ({}f * lr) * buf_{}[i];\n",
                             wt,
@@ -3924,15 +4160,22 @@ fn emit_train_core(tfn: &MLIRFunction, in_cols: i64) -> NsResult<String> {
         }
     }
     if !loss_id.is_empty() && ids.contains_key(&loss_id) {
-        os.push_str(&format!("  if (loss_out) *loss_out = buf_{}[0];\n", loss_id));
+        os.push_str(&format!(
+            "  if (loss_out) *loss_out = buf_{}[0];\n",
+            loss_id
+        ));
     }
     os.push_str("  if (train_mode && wout) {\n");
     {
         let mut off: u64 = 0;
         for wt in &worder_t {
-            let n = ids
-                .get(wt)
-                .map_or(1, |i| if i.static_numel > 0 { i.static_numel } else { 1 });
+            let n = ids.get(wt).map_or(1, |i| {
+                if i.static_numel > 0 {
+                    i.static_numel
+                } else {
+                    1
+                }
+            });
             os.push_str(&format!(
                 "    std::memcpy(wout + {}, buf_{}.data(), {} * sizeof(float));\n",
                 off, wt, n
@@ -3971,7 +4214,11 @@ fn parse_slice_attr(attr: &str) -> (i64, i64, i64) {
         if !any {
             return 0;
         }
-        if neg { -v } else { v }
+        if neg {
+            -v
+        } else {
+            v
+        }
     };
     let axis = read_int(&mut pos);
     if pos < b.len() {
@@ -3986,6 +4233,7 @@ fn parse_slice_attr(attr: &str) -> (i64, i64, i64) {
 }
 
 fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
+    reject_unsupported_dtypes(module)?;
     let (fn_, tfn) = select_functions(module);
     let fn_ = match fn_ {
         Some(f) => f,
@@ -4012,7 +4260,7 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 break;
             }
             let op0 = input_op_of(instr);
-            if !op0.is_empty() && !ids.get(&op0).map_or(false, |i| i.is_weight) {
+            if !op0.is_empty() && !ids.get(&op0).is_some_and(|i| i.is_weight) {
                 ids.entry(op0.clone()).or_default().is_input = true;
                 marked = true;
             }
@@ -4052,6 +4300,11 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
     let mut oss = String::new();
     oss.push_str("// Generated by NeuralScript compiler (CPU reference)\n");
     oss.push_str(&format!("// Lowered function: @{}\n", fn_.name));
+    // CPU SIMD is currently a stable scalar reference alias; keep the marker
+    // explicit until vectorized kernels are implemented.
+    if opts.backend == TargetBackend::CpuSimd {
+        oss.push_str("// CPU SIMD backend requested: scalar reference kernels for now\n");
+    }
     // CPU backend: enable_fp16 is a no-op for the float32 reference (documented use).
     if opts.enable_fp16 {
         oss.push_str("// fp16 requested: CPU backend ignores fp16 (float32 reference)\n");
@@ -4098,20 +4351,20 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
     oss.push_str(cpu_blobs::NS_ATTENTION_BWD);
     oss.push_str(cpu_blobs::NS_MOE_FWD);
 
-    for (id, _inf) in &ids {
+    for id in ids.keys() {
         oss.push_str(&format!("static std::vector<float> buf_{};\n", id));
     }
     oss.push('\n');
 
     let numel_expr = |id: &str| -> String {
-        if ids.get(id).map_or(false, |i| i.is_input) {
+        if ids.get(id).is_some_and(|i| i.is_input) {
             String::from("n")
         } else {
             format!("buf_{}.size()", id)
         }
     };
     let src_or = |id: &str| -> String {
-        if ids.get(id).map_or(false, |i| i.is_input) {
+        if ids.get(id).is_some_and(|i| i.is_input) {
             String::from("input")
         } else {
             format!("buf_{}.data()", id)
@@ -4123,7 +4376,7 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         let id = instr.result_id.clone();
         match instr.op {
             MLIROp::Matmul => {
-                let a = instr.operands.get(0).cloned().unwrap_or_default();
+                let a = instr.operands.first().cloned().unwrap_or_default();
                 let b = instr.operands.get(1).cloned().unwrap_or_default();
                 let inf = ids.get(&b).copied().unwrap_or_default();
                 let ks = inf.rows;
@@ -4135,7 +4388,10 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                     ));
                 }
                 body.push_str(&format!("  {{ int64_t K = {}, N = {};\n", ks, ns_));
-                body.push_str(&format!("    int64_t M = (int64_t)({}) / K;\n", numel_expr(&a)));
+                body.push_str(&format!(
+                    "    int64_t M = (int64_t)({}) / K;\n",
+                    numel_expr(&a)
+                ));
                 body.push_str(&format!("    buf_{}.resize((size_t)(M * N));\n", id));
                 body.push_str(&format!(
                     "    ns_matmul({}, buf_{}.data(), buf_{}.data(), M, K, N); }}\n",
@@ -4152,7 +4408,7 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             | MLIROp::Gelu
             | MLIROp::Silu
             | MLIROp::Identity => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
+                let inp = instr.operands.first().cloned().unwrap_or_default();
                 let code = match instr.op {
                     MLIROp::Relu => 1,
                     MLIROp::LeakyRelu => 2,
@@ -4171,14 +4427,17 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Dropout => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
+                let inp = instr.operands.first().cloned().unwrap_or_default();
                 body.push_str(&format!("  {{ size_t zn = {};\n", numel_expr(&inp)));
                 body.push_str(&format!("    buf_{}.resize(zn);\n", id));
                 body.push_str(&format!("    const float* src = {};\n", src_or(&inp)));
-                body.push_str(&format!("    for (size_t i = 0; i < zn; i++) buf_{}[i] = src[i]; }}\n", id));
+                body.push_str(&format!(
+                    "    for (size_t i = 0; i < zn; i++) buf_{}[i] = src[i]; }}\n",
+                    id
+                ));
             }
             MLIROp::ElementwiseBinop => {
-                let a = instr.operands.get(0).cloned().unwrap_or_default();
+                let a = instr.operands.first().cloned().unwrap_or_default();
                 let b = instr.operands.get(1).cloned().unwrap_or_default();
                 let code = if instr.attribute == "-" {
                     1
@@ -4201,20 +4460,24 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Layernorm => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
+                let inp = instr.operands.first().cloned().unwrap_or_default();
                 let last_v = {
                     let c = ids.get(&id).map_or(0, |i| i.cols);
                     if c > 0 {
                         c
                     } else {
                         let c2 = ids.get(&inp).map_or(0, |i| i.cols);
-                        if c2 > 0 { c2 } else { 1 }
+                        if c2 > 0 {
+                            c2
+                        } else {
+                            1
+                        }
                     }
                 };
                 body.push_str(&format!(
                     "  {{ buf_{} = {};\n",
                     id,
-                    if ids.get(&inp).map_or(false, |i| i.is_input) {
+                    if ids.get(&inp).is_some_and(|i| i.is_input) {
                         String::from("std::vector<float>(input, input + n)")
                     } else {
                         format!("buf_{}", inp)
@@ -4226,20 +4489,24 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Softmax => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
+                let inp = instr.operands.first().cloned().unwrap_or_default();
                 let last_v = {
                     let c = ids.get(&id).map_or(0, |i| i.cols);
                     if c > 0 {
                         c
                     } else {
                         let c2 = ids.get(&inp).map_or(0, |i| i.cols);
-                        if c2 > 0 { c2 } else { 1 }
+                        if c2 > 0 {
+                            c2
+                        } else {
+                            1
+                        }
                     }
                 };
                 body.push_str(&format!(
                     "  {{ buf_{} = {};\n",
                     id,
-                    if ids.get(&inp).map_or(false, |i| i.is_input) {
+                    if ids.get(&inp).is_some_and(|i| i.is_input) {
                         String::from("std::vector<float>(input, input + n)")
                     } else {
                         format!("buf_{}", inp)
@@ -4251,7 +4518,7 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::Fused => {
-                let a = instr.operands.get(0).cloned().unwrap_or_default();
+                let a = instr.operands.first().cloned().unwrap_or_default();
                 let b = instr.operands.get(1).cloned().unwrap_or_default();
                 let inf = ids.get(&b).copied().unwrap_or_default();
                 let ks = inf.rows;
@@ -4263,7 +4530,10 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                     ));
                 }
                 body.push_str(&format!("  {{ int64_t K = {}, N = {};\n", ks, ns_));
-                body.push_str(&format!("    int64_t M = (int64_t)({}) / K;\n", numel_expr(&a)));
+                body.push_str(&format!(
+                    "    int64_t M = (int64_t)({}) / K;\n",
+                    numel_expr(&a)
+                ));
                 body.push_str(&format!("    buf_{}.resize((size_t)(M * N));\n", id));
                 body.push_str(&format!(
                     "    ns_matmul({}, buf_{}.data(), buf_{}.data(), M, K, N);\n",
@@ -4282,11 +4552,7 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                     let mut extra: usize = 0;
                     for opname in &g.ops {
                         if opname == "+" || opname == "-" || opname == "*" || opname == "/" {
-                            let rhs = g
-                                .epilogue_operands
-                                .get(extra)
-                                .cloned()
-                                .unwrap_or_default();
+                            let rhs = g.epilogue_operands.get(extra).cloned().unwrap_or_default();
                             let code = if opname == "-" {
                                 1
                             } else if opname == "*" {
@@ -4333,12 +4599,17 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 body.push_str("  }\n");
             }
             MLIROp::Constant => {
-                body.push_str(&format!("  {{ buf_{}.assign(1, (float)({})); }}\n", id, instr.attribute));
+                body.push_str(&format!(
+                    "  {{ buf_{}.assign(1, (float)({})); }}\n",
+                    id, instr.attribute
+                ));
             }
             MLIROp::TensorAlloc => {}
             MLIROp::Transpose => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
-                let c = ids.get(&inp).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                let inp = instr.operands.first().cloned().unwrap_or_default();
+                let c = ids
+                    .get(&inp)
+                    .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                 let rows = ids.get(&inp).map_or(0, |i| i.rows);
                 if rows > 0 {
                     body.push_str(&format!(
@@ -4368,7 +4639,7 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 }
             }
             MLIROp::Concat => {
-                let a = instr.operands.get(0).cloned().unwrap_or_default();
+                let a = instr.operands.first().cloned().unwrap_or_default();
                 let b = instr.operands.get(1).cloned().unwrap_or_default();
                 let axis: i64 = if !instr.attribute.is_empty() && instr.attribute == "0" {
                     0
@@ -4376,15 +4647,19 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                     1
                 };
                 let src_a = |s: &str| -> String {
-                    if ids.get(s).map_or(false, |i| i.is_input) {
+                    if ids.get(s).is_some_and(|i| i.is_input) {
                         String::from("input")
                     } else {
                         format!("buf_{}.data()", s)
                     }
                 };
                 if axis == 1 {
-                    let ca = ids.get(&a).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
-                    let cb = ids.get(&b).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                    let ca = ids
+                        .get(&a)
+                        .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                    let cb = ids
+                        .get(&b)
+                        .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                     body.push_str(&format!(
                         "  {{ int64_t R = (int64_t)({}) / {};\n",
                         numel_expr(&a),
@@ -4403,7 +4678,9 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                         cb
                     ));
                 } else {
-                    let d = ids.get(&a).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                    let d = ids
+                        .get(&a)
+                        .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                     body.push_str(&format!(
                         "  {{ int64_t Ba = (int64_t)({}) / {};\n",
                         numel_expr(&a),
@@ -4428,8 +4705,8 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 }
             }
             MLIROp::Reshape => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
-                let src = if ids.get(&inp).map_or(false, |i| i.is_input) {
+                let inp = instr.operands.first().cloned().unwrap_or_default();
+                let src = if ids.get(&inp).is_some_and(|i| i.is_input) {
                     String::from("std::vector<float>(input, input+n)")
                 } else {
                     format!("buf_{}", inp)
@@ -4437,11 +4714,13 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 body.push_str(&format!("  buf_{} = {};\n", id, src));
             }
             MLIROp::Slice => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
+                let inp = instr.operands.first().cloned().unwrap_or_default();
                 let (axis, s, e) = parse_slice_attr(&instr.attribute);
                 let src = src_or(&inp);
                 if axis == 0 {
-                    let c = ids.get(&inp).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                    let c = ids
+                        .get(&inp)
+                        .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                     body.push_str(&format!(
                         "  {{ buf_{}.resize((size_t)({}));\n",
                         id,
@@ -4452,13 +4731,19 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                         src, id, c, s, e
                     ));
                 } else {
-                    let c = ids.get(&inp).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                    let c = ids
+                        .get(&inp)
+                        .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                     body.push_str(&format!(
                         "  {{ int64_t M = (int64_t)({}) / {};\n",
                         numel_expr(&inp),
                         c
                     ));
-                    body.push_str(&format!("    buf_{}.resize((size_t)(M * {}));\n", id, e - s));
+                    body.push_str(&format!(
+                        "    buf_{}.resize((size_t)(M * {}));\n",
+                        id,
+                        e - s
+                    ));
                     body.push_str(&format!(
                         "    ns_slice2({}, buf_{}.data(), M, {}, {}, {}); }}\n",
                         src, id, c, s, e
@@ -4466,9 +4751,11 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 }
             }
             MLIROp::Index => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
-                let axis = instr.int_attr as i64;
-                let c = ids.get(&inp).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                let inp = instr.operands.first().cloned().unwrap_or_default();
+                let axis = instr.int_attr;
+                let c = ids
+                    .get(&inp)
+                    .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                 let l = instr.ints_attr.len() as i64;
                 let src = src_or(&inp);
                 body.push_str(&format!("  static const int64_t idx_{}[{}] = {{", id, l));
@@ -4499,10 +4786,12 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 }
             }
             MLIROp::Scatter => {
-                let inp = instr.operands.get(0).cloned().unwrap_or_default();
+                let inp = instr.operands.first().cloned().unwrap_or_default();
                 let upd = instr.operands.get(1).cloned().unwrap_or_default();
-                let axis = instr.int_attr as i64;
-                let c = ids.get(&inp).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                let axis = instr.int_attr;
+                let c = ids
+                    .get(&inp)
+                    .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                 let l = instr.ints_attr.len() as i64;
                 let src = src_or(&inp);
                 let upds = src_or(&upd);
@@ -4535,12 +4824,19 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 }
             }
             MLIROp::LayerEmbedding => {
-                let wt = instr.operands.get(0).cloned().unwrap_or_default();
+                let wt = instr.operands.first().cloned().unwrap_or_default();
                 let idx = instr.operands.get(1).cloned().unwrap_or_default();
-                let v = ids.get(&wt).map_or(1, |i| if i.rows > 0 { i.rows } else { 1 });
-                let d = ids.get(&wt).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
+                let v = ids
+                    .get(&wt)
+                    .map_or(1, |i| if i.rows > 0 { i.rows } else { 1 });
+                let d = ids
+                    .get(&wt)
+                    .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 });
                 body.push_str(&format!("  {{ int64_t n_idx = {};\n", numel_expr(&idx)));
-                body.push_str(&format!("    buf_{}.resize((size_t)(n_idx * {}));\n", id, d));
+                body.push_str(&format!(
+                    "    buf_{}.resize((size_t)(n_idx * {}));\n",
+                    id, d
+                ));
                 body.push_str(&format!(
                     "    ns_embedding({}, {}, buf_{}.data(), n_idx, {}, {}); }}\n",
                     src_or(&wt),
@@ -4551,7 +4847,7 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 ));
             }
             MLIROp::LayerAttention => {
-                let x = instr.operands.get(0).cloned().unwrap_or_default();
+                let x = instr.operands.first().cloned().unwrap_or_default();
                 let wq = instr.operands.get(1).cloned().unwrap_or_default();
                 let wk = instr.operands.get(2).cloned().unwrap_or_default();
                 let wv = instr.operands.get(3).cloned().unwrap_or_default();
@@ -4559,7 +4855,8 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 let d = if instr.int_attr > 0 {
                     instr.int_attr
                 } else {
-                    ids.get(&x).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 })
+                    ids.get(&x)
+                        .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 })
                 };
                 let h: i64 = if instr.attribute.is_empty() {
                     1
@@ -4593,14 +4890,15 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 body.push_str(&format!("        BS, {}, {}, S, {}); }}\n", d, h, causal));
             }
             MLIROp::LayerMoe => {
-                let x = instr.operands.get(0).cloned().unwrap_or_default();
+                let x = instr.operands.first().cloned().unwrap_or_default();
                 let wg = instr.operands.get(1).cloned().unwrap_or_default();
                 let we1 = instr.operands.get(2).cloned().unwrap_or_default();
                 let we2 = instr.operands.get(3).cloned().unwrap_or_default();
                 let d = if instr.int_attr > 0 {
                     instr.int_attr
                 } else {
-                    ids.get(&x).map_or(1, |i| if i.cols > 0 { i.cols } else { 1 })
+                    ids.get(&x)
+                        .map_or(1, |i| if i.cols > 0 { i.cols } else { 1 })
                 };
                 let e: i64 = if instr.attribute.is_empty() {
                     4
@@ -4644,9 +4942,23 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
     {
         let mut off: u64 = 0;
         for w in &worder {
-            let szn = ids.get(w).map_or(1, |i| if i.static_numel > 0 { i.static_numel } else { 1 });
-            oss.push_str(&format!("  // weight {} @ offset {} floats, count {}\n", w, off, szn));
-            oss.push_str(&format!("  buf_{}.assign(weights + {}, weights + {});\n", w, off, off + szn as u64));
+            let szn = ids.get(w).map_or(1, |i| {
+                if i.static_numel > 0 {
+                    i.static_numel
+                } else {
+                    1
+                }
+            });
+            oss.push_str(&format!(
+                "  // weight {} @ offset {} floats, count {}\n",
+                w, off, szn
+            ));
+            oss.push_str(&format!(
+                "  buf_{}.assign(weights + {}, weights + {});\n",
+                w,
+                off,
+                off + szn as u64
+            ));
             off += szn as u64;
         }
     }
@@ -4667,14 +4979,25 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         oss.push_str("  (void)input; (void)output; (void)n;\n");
     } else {
         oss.push_str(&format!("  {{ size_t rn = buf_{}.size();\n", result_id));
-        oss.push_str(&format!("    memcpy(output, buf_{}.data(), rn * sizeof(float)); }}\n", result_id));
+        oss.push_str(&format!(
+            "    memcpy(output, buf_{}.data(), rn * sizeof(float)); }}\n",
+            result_id
+        ));
     }
     oss.push_str("}\n");
 
     if opts.emit_runtime_driver {
         let total: u64 = worder
             .iter()
-            .map(|w| ids.get(w).map_or(1, |i| if i.static_numel > 0 { i.static_numel as u64 } else { 1 }))
+            .map(|w| {
+                ids.get(w).map_or(1, |i| {
+                    if i.static_numel > 0 {
+                        i.static_numel as u64
+                    } else {
+                        1
+                    }
+                })
+            })
             .sum();
 
         let mut in_cols: i64 = -1;
@@ -4771,7 +5094,13 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             if moe_e > 0 {
                 let mut off: u64 = 0;
                 for w in &worder {
-                    let szn = ids.get(w).map_or(1, |i| if i.static_numel > 0 { i.static_numel as u64 } else { 1 });
+                    let szn = ids.get(w).map_or(1, |i| {
+                        if i.static_numel > 0 {
+                            i.static_numel as u64
+                        } else {
+                            1
+                        }
+                    });
                     if w.len() > 4 && w.ends_with("_g_w") {
                         moe_off_g = off;
                     } else if w.len() > 5 && w.ends_with("_e1_w") {
@@ -4822,7 +5151,7 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                     }
                 }
                 oss.push_str("typedef struct ns_cpu_ctx {\n");
-                for (id, _ix) in &sc {
+                for id in sc.keys() {
                     if id == &xid_ || id == &yid_ {
                         continue;
                     }
@@ -4858,7 +5187,9 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                     oss.push_str("  size_t moe_active_count = 0;     // number of alive experts\n");
                 }
                 oss.push_str("  std::mt19937 rng;\n");
-                oss.push_str("  int64_t lr_step = 0;   // LR schedule step counter (runtime wrapper)\n");
+                oss.push_str(
+                    "  int64_t lr_step = 0;   // LR schedule step counter (runtime wrapper)\n",
+                );
                 let ctor_init = if moe_e > 0 {
                     format!(
                         " moe_active.assign({}, 0); for (int e = 0; e < {}; e++) moe_active[(size_t)e] = 1; moe_active_count = (size_t){};",
@@ -4867,7 +5198,10 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
                 } else {
                     String::new()
                 };
-                oss.push_str(&format!("  ns_cpu_ctx() : rng(0x9E3779B9u) {{{} }}\n", ctor_init));
+                oss.push_str(&format!(
+                    "  ns_cpu_ctx() : rng(0x9E3779B9u) {{{} }}\n",
+                    ctor_init
+                ));
                 oss.push_str("} ns_cpu_ctx;\n");
             } else if moe_e > 0 {
                 oss.push_str(&format!(
@@ -4898,7 +5232,13 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             ));
             let mut off: u64 = 0;
             for (i, w) in worder.iter().enumerate() {
-                let szn = ids.get(w).map_or(1, |inf| if inf.static_numel > 0 { inf.static_numel } else { 1 });
+                let szn = ids.get(w).map_or(1, |inf| {
+                    if inf.static_numel > 0 {
+                        inf.static_numel
+                    } else {
+                        1
+                    }
+                });
                 oss.push_str(&format!("    {{\"{}\", {}, {}}}", w, off, szn));
                 if i + 1 < worder.len() {
                     oss.push_str(",\n");
@@ -4913,7 +5253,10 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             "static const ns_weight_layout ns_layout = {{ {}, ns_desc }};\n",
             worder.len()
         ));
-        oss.push_str(&format!("static const size_t ns_weight_total = {};\n", total));
+        oss.push_str(&format!(
+            "static const size_t ns_weight_total = {};\n",
+            total
+        ));
         oss.push_str(&format!(
             "static const int64_t ns_in_cols = {}, ns_out_cols = {};\n",
             in_cols, out_cols
@@ -4926,10 +5269,14 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         }
         oss.push_str("}\n\n");
 
-        oss.push_str("extern \"C\" ns_model* ns_runtime_init(const float* weights, size_t num_floats) {\n");
+        oss.push_str(
+            "extern \"C\" ns_model* ns_runtime_init(const float* weights, size_t num_floats) {\n",
+        );
         oss.push_str("    if (num_floats != ns_weight_total) return nullptr;\n");
         oss.push_str("    ns_cpu_ctx* ctx = new ns_cpu_ctx();\n");
-        oss.push_str("    ns_model* m = new ns_model{ new float[ns_weight_total], ns_weight_total, ctx };\n");
+        oss.push_str(
+            "    ns_model* m = new ns_model{ new float[ns_weight_total], ns_weight_total, ctx };\n",
+        );
         oss.push_str("    if (!m->w) { delete ctx; delete m; return nullptr; }\n");
         oss.push_str("    std::memcpy(m->w, weights, ns_weight_total * sizeof(float));\n");
         oss.push_str("    return m;\n");
@@ -4939,11 +5286,17 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         oss.push_str(&format!(
             "    {}(input, m->w, output, input_numel{});\n",
             opts.function_name,
-            if moe_e > 0 { ", m->ctx->moe_active.data()" } else { "" }
+            if moe_e > 0 {
+                ", m->ctx->moe_active.data()"
+            } else {
+                ""
+            }
         ));
         oss.push_str("    return 0;\n");
         oss.push_str("}\n\n");
-        oss.push_str("extern \"C\" size_t ns_model_output_numel(const ns_model* m, size_t input_numel) {\n");
+        oss.push_str(
+            "extern \"C\" size_t ns_model_output_numel(const ns_model* m, size_t input_numel) {\n",
+        );
         oss.push_str("    (void)m; return (size_t)((int64_t)input_numel / ns_in_cols) * (size_t)ns_out_cols;\n");
         oss.push_str("}\n\n");
         oss.push_str("extern \"C\" size_t ns_model_weight_count(const ns_model* m) {\n");
@@ -4952,7 +5305,9 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         oss.push_str("extern \"C\" size_t ns_weight_count_static(void) {\n");
         oss.push_str("    return ns_weight_total;\n");
         oss.push_str("}\n\n");
-        oss.push_str("extern \"C\" int ns_model_get_weights(const ns_model* m, float* out, size_t n) {\n");
+        oss.push_str(
+            "extern \"C\" int ns_model_get_weights(const ns_model* m, float* out, size_t n) {\n",
+        );
         oss.push_str("    if (!m || !m->w || !out || n != ns_weight_total) return -1;\n");
         oss.push_str("    std::memcpy(out, m->w, n * sizeof(float));\n");
         oss.push_str("    return 0;\n");
@@ -4967,7 +5322,9 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         oss.push_str("// 4-byte magic \"NSM2\", size_t float count, raw weights, then (MoE\n");
         oss.push_str("// models) uint32 n_layers, uint32 capacity, <capacity> mask bytes.\n");
         oss.push_str("// Legacy \"NSM1\" files (weights only) load with all experts alive.\n");
-        oss.push_str("extern \"C\" int ns_save_checkpoint(const ns_model* m, const char* path) {\n");
+        oss.push_str(
+            "extern \"C\" int ns_save_checkpoint(const ns_model* m, const char* path) {\n",
+        );
         if moe_e > 0 {
             oss.push_str("    if (!m || !m->ctx || !m->w || !path) return -1;\n");
         } else {
@@ -4978,14 +5335,18 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         oss.push_str("    const unsigned magic = 0x4E534D32u; /* \"NSM2\" */\n");
         oss.push_str("    if (fwrite(&magic, sizeof(magic), 1, fp) != 1 ||\n");
         oss.push_str("        fwrite(&ns_weight_total, sizeof(ns_weight_total), 1, fp) != 1 ||\n");
-        oss.push_str("        fwrite(m->w, sizeof(float), ns_weight_total, fp) != ns_weight_total) {\n");
+        oss.push_str(
+            "        fwrite(m->w, sizeof(float), ns_weight_total, fp) != ns_weight_total) {\n",
+        );
         oss.push_str("        fclose(fp); return -1;\n");
         oss.push_str("    }\n");
         if moe_e > 0 {
             oss.push_str("    { const unsigned n_layers = 1U;\n");
             oss.push_str("      if (fwrite(&n_layers, sizeof(n_layers), 1, fp) != 1 ||\n");
             oss.push_str("          fwrite(&ns_moe_cap, sizeof(ns_moe_cap), 1, fp) != 1 ||\n");
-            oss.push_str("          fwrite(m->ctx->moe_active.data(), 1, ns_moe_cap, fp) != ns_moe_cap) {\n");
+            oss.push_str(
+                "          fwrite(m->ctx->moe_active.data(), 1, ns_moe_cap, fp) != ns_moe_cap) {\n",
+            );
             oss.push_str("          fclose(fp); return -1;\n");
             oss.push_str("      } }\n");
         }
@@ -5002,7 +5363,9 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
         oss.push_str("    unsigned magic = 0; size_t n = 0;\n");
         oss.push_str("    if (fread(&magic, sizeof(magic), 1, fp) != 1 ||\n");
         oss.push_str("        fread(&n, sizeof(n), 1, fp) != 1 ||\n");
-        oss.push_str("        (magic != 0x4E534D31u && magic != 0x4E534D32u) || n != ns_weight_total ||\n");
+        oss.push_str(
+            "        (magic != 0x4E534D31u && magic != 0x4E534D32u) || n != ns_weight_total ||\n",
+        );
         oss.push_str("        fread(m->w, sizeof(float), n, fp) != n) {\n");
         oss.push_str("        fclose(fp); return -1;\n");
         oss.push_str("    }\n");
@@ -5064,7 +5427,9 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             oss.push_str("extern \"C\" size_t ns_expert_merge(ns_model* m, int a, int b) {\n");
             oss.push_str("    if (!m || !m->ctx || !m->w || a < 0 || b < 0 || a == b ||\n");
             oss.push_str("        a >= (int)ns_moe_cap || b >= (int)ns_moe_cap ||\n");
-            oss.push_str("        !m->ctx->moe_active[(size_t)a] || !m->ctx->moe_active[(size_t)b])\n");
+            oss.push_str(
+                "        !m->ctx->moe_active[(size_t)a] || !m->ctx->moe_active[(size_t)b])\n",
+            );
             oss.push_str("        return m && m->ctx ? m->ctx->moe_active_count : 0;\n");
             oss.push_str("    const size_t s1 = (size_t)a * ns_moe_dim * ns_moe_ffn;\n");
             oss.push_str("    const size_t s1b = (size_t)b * ns_moe_dim * ns_moe_ffn;\n");
@@ -5076,10 +5441,14 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             oss.push_str("                m->w[ns_moe_off_g + k * ns_moe_cap + (size_t)b]);\n");
             oss.push_str("    for (size_t q = 0; q < ns_moe_dim * ns_moe_ffn; q++)\n");
             oss.push_str("      m->w[ns_moe_off_e1 + s1 + q] =\n");
-            oss.push_str("        0.5f * (m->w[ns_moe_off_e1 + s1 + q] + m->w[ns_moe_off_e1 + s1b + q]);\n");
+            oss.push_str(
+                "        0.5f * (m->w[ns_moe_off_e1 + s1 + q] + m->w[ns_moe_off_e1 + s1b + q]);\n",
+            );
             oss.push_str("    for (size_t q = 0; q < ns_moe_ffn * ns_moe_dim; q++)\n");
             oss.push_str("      m->w[ns_moe_off_e2 + t2 + q] =\n");
-            oss.push_str("        0.5f * (m->w[ns_moe_off_e2 + t2 + q] + m->w[ns_moe_off_e2 + t2b + q]);\n");
+            oss.push_str(
+                "        0.5f * (m->w[ns_moe_off_e2 + t2 + q] + m->w[ns_moe_off_e2 + t2b + q]);\n",
+            );
             oss.push_str("    m->ctx->moe_active[(size_t)b] = 0;\n");
             oss.push_str("    m->ctx->moe_active_count--;\n");
             oss.push_str("    return m->ctx->moe_active_count;\n");
@@ -5100,9 +5469,11 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             let t = f;
             oss.push_str("\n// ---- Training core (forward + backward + optimizer) ----\n");
             oss.push_str(&emit_train_core(t, in_cols)?);
-            oss.push_str("\n");
+            oss.push('\n');
             oss.push_str(&lr_schedule_source());
-            oss.push_str("\nextern \"C\" int ns_runtime_train_step(ns_model* m, const float* input,\n");
+            oss.push_str(
+                "\nextern \"C\" int ns_runtime_train_step(ns_model* m, const float* input,\n",
+            );
             oss.push_str("                                        const float* labels, size_t input_numel,\n");
             oss.push_str("                                        float* loss_out, float lr) {\n");
             oss.push_str("    if (!m || !m->w) return -1;\n");
@@ -5113,7 +5484,9 @@ fn gen_cpu(module: &MLIRModule, opts: &CodegenOptions) -> NsResult<String> {
             oss.push_str("    return 0;\n");
             oss.push_str("}\n\n");
             oss.push_str("extern \"C\" int ns_objective_loss(ns_model* m, const float* input,\n");
-            oss.push_str("                                   const float* labels, size_t input_numel,\n");
+            oss.push_str(
+                "                                   const float* labels, size_t input_numel,\n",
+            );
             oss.push_str("                                   float* loss_out) {\n");
             oss.push_str("    if (!m || !m->w) return -1;\n");
             oss.push_str("    ns_train_core(m->ctx, input, input_numel, labels, m->w, (float*)0, loss_out, 0.f, 0);\n");

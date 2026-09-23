@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Lexer — port of `ns/lexer/lexer.cpp`.
 
 use super::token::{Token, TokenType};
@@ -289,7 +290,9 @@ impl Lexer {
     fn read_identifier(&mut self) -> Token {
         let start = self.pos;
         let start_col = self.column;
-        while self.pos < self.source.len() && (is_alnum(self.source[self.pos]) || self.source[self.pos] == b'_') {
+        while self.pos < self.source.len()
+            && (is_alnum(self.source[self.pos]) || self.source[self.pos] == b'_')
+        {
             self.advance();
         }
         let word = String::from_utf8_lossy(&self.source[start..self.pos]).into_owned();
@@ -318,10 +321,14 @@ impl Lexer {
             }
         }
 
-        if self.pos < self.source.len() && (self.source[self.pos] == b'e' || self.source[self.pos] == b'E') {
+        if self.pos < self.source.len()
+            && (self.source[self.pos] == b'e' || self.source[self.pos] == b'E')
+        {
             is_float = true;
             self.advance();
-            if self.pos < self.source.len() && (self.source[self.pos] == b'+' || self.source[self.pos] == b'-') {
+            if self.pos < self.source.len()
+                && (self.source[self.pos] == b'+' || self.source[self.pos] == b'-')
+            {
                 self.advance();
             }
             while self.pos < self.source.len() && is_digit(self.source[self.pos]) {
@@ -437,7 +444,12 @@ mod tests {
     use super::*;
 
     fn types(src: &str) -> Vec<TokenType> {
-        Lexer::new(src).tokenize().unwrap().into_iter().map(|t| t.type_).collect()
+        Lexer::new(src)
+            .tokenize()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.type_)
+            .collect()
     }
 
     #[test]
@@ -474,7 +486,10 @@ mod tests {
     #[test]
     fn strings_with_escapes() {
         let toks = Lexer::new(r#"s = "a\nb";"#).tokenize().unwrap();
-        let s = toks.iter().find(|t| t.type_ == TokenType::StringLiteral).unwrap();
+        let s = toks
+            .iter()
+            .find(|t| t.type_ == TokenType::StringLiteral)
+            .unwrap();
         assert_eq!(s.value, "a\nb");
     }
 }

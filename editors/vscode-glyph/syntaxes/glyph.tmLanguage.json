@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Glyph",
+  "scopeName": "source.glyph",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#numbers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.glyph", "match": "//.*$" },
+        { "name": "comment.block.glyph", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.glyph",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "name": "constant.character.escape.glyph", "match": "\\\\." }]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.glyph",
+          "match": "\\b(fn|if|else|while|loop|for|in|match|return|break|continue|spawn|await|use|module|impl|test|guard)\\b"
+        },
+        { "name": "storage.type.glyph", "match": "\\b(let|mut|const|struct|enum|network|layer|forward|train|grad)\\b" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "support.type.glyph", "match": "\\b(Int64|UInt64|Float64|Bool|String|Bytes|List|Map|Option|Result|Async|Channel|Tensor)\\b" }
+      ]
+    },
+    "numbers": {
+      "patterns": [{ "name": "constant.numeric.glyph", "match": "\\b[0-9]+(?:\\.[0-9]+)?\\b" }]
+    }
+  }
+}

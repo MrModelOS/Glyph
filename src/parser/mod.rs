@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::lexer::{SpannedToken, Token, LexerError};
+use crate::lexer::{LexerError, SpannedToken, Token};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -34,7 +34,10 @@ impl Parser {
     }
 
     fn peek(&self) -> &Token {
-        self.tokens.get(self.pos).map(|t| &t.token).unwrap_or(&Token::Eof)
+        self.tokens
+            .get(self.pos)
+            .map(|t| &t.token)
+            .unwrap_or(&Token::Eof)
     }
 
     fn peek_spanned(&self) -> &SpannedToken {
@@ -53,13 +56,19 @@ impl Parser {
             return LineCol { line: 1, col: 1 };
         }
         let t = &self.tokens[self.pos - 1];
-        LineCol { line: t.end_line, col: t.end_column }
+        LineCol {
+            line: t.end_line,
+            col: t.end_column,
+        }
     }
 
     /// Build a span from a token that begins the node to the current end.
     fn span_of(&self, start: &SpannedToken) -> Span {
         Span::new(
-            LineCol { line: start.line, col: start.column },
+            LineCol {
+                line: start.line,
+                col: start.column,
+            },
             self.last_end(),
         )
     }
@@ -111,7 +120,10 @@ impl Parser {
             Token::Identifier(name) => {
                 self.advance();
                 let span = Span::new(
-                    LineCol { line: spanned.line, col: spanned.column },
+                    LineCol {
+                        line: spanned.line,
+                        col: spanned.column,
+                    },
                     LineCol {
                         line: spanned.end_line,
                         col: spanned.end_column,
@@ -171,7 +183,8 @@ impl Parser {
                     spanned.token.clone(),
                     spanned.line,
                     spanned.column,
-                    "top-level item (@fn, @struct, @enum, @trait, @impl, @const, @use, @pub)".to_string(),
+                    "top-level item (@fn, @struct, @enum, @trait, @impl, @const, @use, @pub)"
+                        .to_string(),
                 ))
             }
         }
@@ -334,7 +347,12 @@ impl Parser {
 
         self.expect(&Token::RBrace)?;
 
-        Ok(TopLevelItem::Struct { name, name_span, fields, pub_vis })
+        Ok(TopLevelItem::Struct {
+            name,
+            name_span,
+            fields,
+            pub_vis,
+        })
     }
 
     fn parse_enum_with_vis(&mut self, pub_vis: Visibility) -> Result<TopLevelItem, ParseError> {
@@ -400,7 +418,11 @@ impl Parser {
 
         self.expect(&Token::RBrace)?;
 
-        Ok(TopLevelItem::Enum { name, variants, pub_vis })
+        Ok(TopLevelItem::Enum {
+            name,
+            variants,
+            pub_vis,
+        })
     }
 
     fn parse_trait_with_vis(&mut self, pub_vis: Visibility) -> Result<TopLevelItem, ParseError> {
@@ -455,7 +477,11 @@ impl Parser {
 
         self.expect(&Token::RBrace)?;
 
-        Ok(TopLevelItem::Trait { name, methods, pub_vis })
+        Ok(TopLevelItem::Trait {
+            name,
+            methods,
+            pub_vis,
+        })
     }
 
     fn parse_impl_with_vis(&mut self, pub_vis: Visibility) -> Result<TopLevelItem, ParseError> {
@@ -520,7 +546,11 @@ impl Parser {
 
         self.expect(&Token::RBrace)?;
 
-        Ok(TopLevelItem::Impl { type_name, methods, pub_vis })
+        Ok(TopLevelItem::Impl {
+            type_name,
+            methods,
+            pub_vis,
+        })
     }
 
     fn parse_const_with_vis(&mut self, pub_vis: Visibility) -> Result<TopLevelItem, ParseError> {
@@ -532,7 +562,12 @@ impl Parser {
         let value = self.parse_expression()?;
         self.expect(&Token::Semicolon)?;
 
-        Ok(TopLevelItem::Const { name, ty, value, pub_vis })
+        Ok(TopLevelItem::Const {
+            name,
+            ty,
+            value,
+            pub_vis,
+        })
     }
 
     fn parse_type(&mut self) -> Result<Type, ParseError> {
@@ -673,13 +708,19 @@ impl Parser {
             Token::Let => self.parse_let(),
             Token::Return => self.parse_return(),
             Token::Break => {
-                let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+                let loc = LineCol {
+                    line: self.peek_spanned().line,
+                    col: self.peek_spanned().column,
+                };
                 self.advance();
                 self.expect(&Token::Semicolon)?;
                 Ok(Stmt::Break(loc))
             }
             Token::Continue => {
-                let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+                let loc = LineCol {
+                    line: self.peek_spanned().line,
+                    col: self.peek_spanned().column,
+                };
                 self.advance();
                 self.expect(&Token::Semicolon)?;
                 Ok(Stmt::Continue(loc))
@@ -691,12 +732,18 @@ impl Parser {
             Token::Spawn => self.parse_spawn(),
             Token::Select => self.parse_select(),
             Token::If => {
-                let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+                let loc = LineCol {
+                    line: self.peek_spanned().line,
+                    col: self.peek_spanned().column,
+                };
                 let expr = self.parse_if()?;
                 Ok(Stmt::Expression(loc, expr))
             }
             Token::Match => {
-                let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+                let loc = LineCol {
+                    line: self.peek_spanned().line,
+                    col: self.peek_spanned().column,
+                };
                 let expr = self.parse_match()?;
                 Ok(Stmt::Expression(loc, expr))
             }
@@ -705,7 +752,10 @@ impl Parser {
     }
 
     fn parse_let(&mut self) -> Result<Stmt, ParseError> {
-        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        let loc = LineCol {
+            line: self.peek_spanned().line,
+            col: self.peek_spanned().column,
+        };
         self.advance(); // consume let
 
         let mutable = if self.peek() == &Token::Mut {
@@ -739,7 +789,10 @@ impl Parser {
     }
 
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
-        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        let loc = LineCol {
+            line: self.peek_spanned().line,
+            col: self.peek_spanned().column,
+        };
         self.advance(); // consume return
 
         let value = if self.peek() == &Token::Semicolon {
@@ -754,7 +807,10 @@ impl Parser {
     }
 
     fn parse_loop(&mut self) -> Result<Stmt, ParseError> {
-        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        let loc = LineCol {
+            line: self.peek_spanned().line,
+            col: self.peek_spanned().column,
+        };
         self.advance(); // consume loop
         self.expect(&Token::LBrace)?;
         let body = self.parse_block()?;
@@ -764,7 +820,10 @@ impl Parser {
     }
 
     fn parse_while(&mut self) -> Result<Stmt, ParseError> {
-        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        let loc = LineCol {
+            line: self.peek_spanned().line,
+            col: self.peek_spanned().column,
+        };
         self.advance(); // consume while
         let condition = self.parse_expression()?;
         self.expect(&Token::LBrace)?;
@@ -779,7 +838,10 @@ impl Parser {
     }
 
     fn parse_for(&mut self) -> Result<Stmt, ParseError> {
-        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        let loc = LineCol {
+            line: self.peek_spanned().line,
+            col: self.peek_spanned().column,
+        };
         self.advance(); // consume for
         let spanned_for_var = self.peek_spanned().clone();
         let variable = self.expect_ident()?;
@@ -793,7 +855,10 @@ impl Parser {
             loc,
             variable: variable.clone(),
             var_span: Span::new(
-                LineCol { line: spanned_for_var.line, col: spanned_for_var.column },
+                LineCol {
+                    line: spanned_for_var.line,
+                    col: spanned_for_var.column,
+                },
                 LineCol {
                     line: spanned_for_var.end_line,
                     col: spanned_for_var.end_column,
@@ -805,7 +870,10 @@ impl Parser {
     }
 
     fn parse_guard(&mut self) -> Result<Stmt, ParseError> {
-        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        let loc = LineCol {
+            line: self.peek_spanned().line,
+            col: self.peek_spanned().column,
+        };
         self.advance(); // consume #guard
         self.expect(&Token::LParen)?;
         let condition = self.parse_expression()?;
@@ -829,7 +897,10 @@ impl Parser {
     }
 
     fn parse_spawn(&mut self) -> Result<Stmt, ParseError> {
-        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        let loc = LineCol {
+            line: self.peek_spanned().line,
+            col: self.peek_spanned().column,
+        };
         self.advance(); // consume spawn
         let expr = self.parse_expression()?;
         self.expect(&Token::Semicolon)?;
@@ -838,7 +909,10 @@ impl Parser {
     }
 
     fn parse_select(&mut self) -> Result<Stmt, ParseError> {
-        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        let loc = LineCol {
+            line: self.peek_spanned().line,
+            col: self.peek_spanned().column,
+        };
         self.advance(); // consume select
         self.expect(&Token::LBrace)?;
 
@@ -868,7 +942,7 @@ impl Parser {
                 }
             };
 
-self.expect(&Token::FatArrow)?;
+            self.expect(&Token::FatArrow)?;
             let body = if self.peek() == &Token::LBrace {
                 self.advance();
                 let b = self.parse_block()?;
@@ -894,7 +968,10 @@ self.expect(&Token::FatArrow)?;
     }
 
     fn parse_expression_statement(&mut self) -> Result<Stmt, ParseError> {
-        let loc = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+        let loc = LineCol {
+            line: self.peek_spanned().line,
+            col: self.peek_spanned().column,
+        };
         let expr = self.parse_expression()?;
 
         // Check if this is an assignment
@@ -979,10 +1056,22 @@ self.expect(&Token::FatArrow)?;
 
         while matches!(self.peek(), Token::Lt | Token::Gt | Token::Le | Token::Ge) {
             let op = match self.peek() {
-                Token::Lt => { self.advance(); BinOp::Lt }
-                Token::Gt => { self.advance(); BinOp::Gt }
-                Token::Le => { self.advance(); BinOp::Le }
-                Token::Ge => { self.advance(); BinOp::Ge }
+                Token::Lt => {
+                    self.advance();
+                    BinOp::Lt
+                }
+                Token::Gt => {
+                    self.advance();
+                    BinOp::Gt
+                }
+                Token::Le => {
+                    self.advance();
+                    BinOp::Le
+                }
+                Token::Ge => {
+                    self.advance();
+                    BinOp::Ge
+                }
                 _ => unreachable!(),
             };
             let right = self.parse_range()?;
@@ -1060,9 +1149,18 @@ self.expect(&Token::FatArrow)?;
 
         while matches!(self.peek(), Token::Star | Token::Slash | Token::Percent) {
             let op = match self.peek() {
-                Token::Star => { self.advance(); BinOp::Mul }
-                Token::Slash => { self.advance(); BinOp::Div }
-                Token::Percent => { self.advance(); BinOp::Mod }
+                Token::Star => {
+                    self.advance();
+                    BinOp::Mul
+                }
+                Token::Slash => {
+                    self.advance();
+                    BinOp::Div
+                }
+                Token::Percent => {
+                    self.advance();
+                    BinOp::Mod
+                }
                 _ => unreachable!(),
             };
             let right = self.parse_as()?;
@@ -1096,7 +1194,10 @@ self.expect(&Token::FatArrow)?;
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Token::Minus => {
-                let start = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+                let start = LineCol {
+                    line: self.peek_spanned().line,
+                    col: self.peek_spanned().column,
+                };
                 self.advance();
                 let expr = self.parse_unary()?;
                 Ok(Expr::UnaryOp {
@@ -1106,7 +1207,10 @@ self.expect(&Token::FatArrow)?;
                 })
             }
             Token::Bang => {
-                let start = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+                let start = LineCol {
+                    line: self.peek_spanned().line,
+                    col: self.peek_spanned().column,
+                };
                 self.advance();
                 let expr = self.parse_unary()?;
                 Ok(Expr::UnaryOp {
@@ -1116,7 +1220,10 @@ self.expect(&Token::FatArrow)?;
                 })
             }
             Token::Ref => {
-                let start = LineCol { line: self.peek_spanned().line, col: self.peek_spanned().column };
+                let start = LineCol {
+                    line: self.peek_spanned().line,
+                    col: self.peek_spanned().column,
+                };
                 self.advance();
                 let expr = self.parse_unary()?;
                 let inner_span = expr.span();
@@ -1244,7 +1351,7 @@ self.expect(&Token::FatArrow)?;
 
                     // Check for enum constructor: Enum::Variant or Enum::Variant(args)
                     // Only uppercase-starting identifiers are enum type names
-                    if path.len() == 2 && path[0].chars().next().map_or(false, |c| c.is_uppercase()) {
+                    if path.len() == 2 && path[0].chars().next().is_some_and(|c| c.is_uppercase()) {
                         if self.peek() == &Token::LParen {
                             self.advance();
                             let mut args = Vec::new();
@@ -1282,7 +1389,9 @@ self.expect(&Token::FatArrow)?;
                 }
                 // Check for struct initialization: TypeName { field: value, ... }
                 // Only uppercase-starting identifiers can be struct type names
-                else if name.chars().next().map_or(false, |c| c.is_uppercase()) && self.peek() == &Token::LBrace {
+                else if name.chars().next().is_some_and(|c| c.is_uppercase())
+                    && self.peek() == &Token::LBrace
+                {
                     self.advance();
                     let mut fields = Vec::new();
                     while self.peek() != &Token::RBrace {
@@ -1369,10 +1478,7 @@ self.expect(&Token::FatArrow)?;
     }
 
     /// Parse a built-in phantom enum constructor: Result::Ok(x), Option::Some(x), Option::None.
-    fn parse_builtin_enum_constructor(
-        &mut self,
-        enum_name: &str,
-    ) -> Result<Expr, ParseError> {
+    fn parse_builtin_enum_constructor(&mut self, enum_name: &str) -> Result<Expr, ParseError> {
         let start = self.peek_spanned().clone();
         self.advance(); // consume Result / Option token
         self.expect(&Token::DoubleColon)?;
@@ -1477,7 +1583,11 @@ self.expect(&Token::FatArrow)?;
             self.expect(&Token::FatArrow)?;
             let body = self.parse_expression()?;
 
-            arms.push(MatchArm { pattern, guard, body });
+            arms.push(MatchArm {
+                pattern,
+                guard,
+                body,
+            });
 
             if self.peek() == &Token::Comma {
                 self.advance();
@@ -1623,7 +1733,12 @@ mod tests {
 
         assert_eq!(program.items.len(), 1);
         match &program.items[0] {
-            TopLevelItem::Function { name, params, return_type, .. } => {
+            TopLevelItem::Function {
+                name,
+                params,
+                return_type,
+                ..
+            } => {
                 assert_eq!(name, "add");
                 assert_eq!(params.len(), 2);
                 assert_eq!(return_type, &Some(Type::Int64));
@@ -1632,7 +1747,7 @@ mod tests {
         }
     }
 
-#[test]
+    #[test]
     fn test_parse_struct() {
         let input = "@struct Point { x: Float64, y: Float64 }";
         let mut lexer = Lexer::new(input);
@@ -1866,7 +1981,8 @@ mod tests {
 
     #[test]
     fn test_parse_async_impl_method() {
-        let input = "@struct U { x: Int64 } @impl U { @fn async get(u: U) -> Int64 { return u.x; } }";
+        let input =
+            "@struct U { x: Int64 } @impl U { @fn async get(u: U) -> Int64 { return u.x; } }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Token types and the Token struct — port of `ns/lexer/token.hpp` + `token.cpp`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,9 +66,9 @@ pub enum TokenType {
     OpAnd,
     OpOr,
     OpNot,
-    OpMatmul,     // @
-    OpPipeline,   // ->
-    OpArrowFunc,  // =>
+    OpMatmul,    // @
+    OpPipeline,  // ->
+    OpArrowFunc, // =>
     OpDot,
     OpComma,
     OpColon,

@@ -1,0 +1,9 @@
+[book]
+title = "Glyph language compiler"
+authors = ["MrModelOS"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+create-missing = false

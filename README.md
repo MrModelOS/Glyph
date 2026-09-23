@@ -50,7 +50,7 @@ into the single `glyphc` binary.
 glyphc nns file.ns --check                          # typecheck only, no codegen
 glyphc nns file.ns --cpp                            # emit C++ to stdout
 glyphc nns file.ns --cpp --runtime                  # emit C++ + runtime header
-glyphc nns examples/mlp.ns --cpp --runtime | gcc -x c - -o a.out && ./a.out
+glyphc nns examples/nns/mlp.ns --cpp --runtime | gcc -x c - -o a.out && ./a.out
 glyphc nns file.ns --cuda --runtime                 # emit CUDA + runtime header
 glyphc nns file.ns --cuda --runtime -o out.cu       # write to file
 ```
@@ -58,22 +58,48 @@ glyphc nns file.ns --cuda --runtime -o out.cu       # write to file
 Flags: `--check` (no codegen), `--cpp` / `--cuda` (select backend), `--runtime` (prepend
 runtime header), `-o`/`--output <file>` (write to file instead of stdout).
 
-Examples live in `examples/*.ns` (e.g. `examples/mlp.ns`).
+Examples live in `examples/nns/*.ns` (e.g. `examples/nns/mlp.ns`). The complete
+reference is in [docs/nns.md](docs/nns.md).
 
 ## Install
 
-Requires Rust (1.70+) and `gcc` (or `clang`) on `PATH`.
+Requires Rust (1.85+) and `gcc` (or `clang`) on `PATH`.
+
+The easiest installation is the release installer:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/MrModelOS/Glyph/main/install.sh | bash
+# optional: install into ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/MrModelOS/Glyph/main/install.sh | bash -s -- --prefix ~/.local/bin
+```
+
+For a source install or development checkout:
+
+```bash
+cargo install --git https://github.com/MrModelOS/Glyph --locked
+# or
 git clone https://github.com/MrModelOS/Glyph.git
-cd Glyph/glyphc
+cd Glyph
 cargo build --release
 ```
 
-The binary appears at `target/release/glyphc`. Prebuilt binaries for tagged releases
-are published on the [Releases](/MrModelOS/Glyph/releases) page.
+A container image can be built locally with `docker build -t glyphc .`; the
+resulting image exposes the `glyphc` binary. Tagged Linux, macOS, and Windows
+archives with SHA-256 checksums are published on the
+[Releases](https://github.com/MrModelOS/Glyph/releases) page. The documentation
+site is built from `docs/` by the Pages workflow.
 
 ## Quick start
+
+Start a project with the built-in scaffold:
+
+```bash
+glyphc new hello
+cd hello
+glyphc build
+```
+
+Or compile a single file:
 
 `hello.glyph`:
 
@@ -109,13 +135,16 @@ glyphc run --input examples/fifteen.glyph
 | `build [--profile dev\|release]` | Build a project described by `glyph.toml` |
 | `fmt --input f.glyph [--write] [--check]` | Canonical indentation/whitespace; comments preserved (prints to stdout by default) |
 | `test [-i f.glyph] [--compiler gcc] [--opt -O2]` | Run `@test` functions (scans `./src` without `-i`) |
-| `glyphc --lsp` | LSP server: live diagnostics (lexer/parser/typechecker, full spans), hover and completion |
+| `nns <file.ns> [--check] [--cpp] [--simd] [--cuda] [--runtime] [--mlir] [--fp16] [-o <file>]` | NeuralScript tensor compiler: `--check` shape-check only, `--cpp`/`--simd`/`--cuda` select the backend (default CUDA), `--runtime` emits the C-ABI runtime, `--mlir` dumps IR, `--fp16` enables the experimental CUDA header mode, `-o` writes to a file (default stdout) |
+| `new <name>` / `init [name]` | Create a `glyph.toml` project scaffold |
+| `lsp` | LSP server alias for `glyphc --lsp` (also `glyphc --lsp` as flag) — live diagnostics, hover, completion, go-to-definition |
+| `glyphc --lsp` | LSP server (flag form): live diagnostics (lexer/parser/typechecker, full spans), hover and completion |
 
-Common flags: `-h/--help`, `-V/--version`.
+Common flags: `-h/--help`, `-V/--version`. `nns` details: [docs/nns.md](docs/nns.md); editor setup: [docs/editors.md](docs/editors.md). A minimal VS Code extension is available in [`editors/vscode-glyph`](editors/vscode-glyph/).
 
 ## Language tour
 
-Full reference (in Russian): [docs/language.md](docs/language.md). Highlights:
+Full reference: [English](docs/language_en.md) · [Русский](docs/language.md). Highlights:
 
 ```glyph
 @struct Point { x: Float64, y: Float64 }
@@ -186,7 +215,7 @@ Concurrency, modules, and asserts are documented in [docs/language.md](docs/lang
 
 ```bash
 cargo build
-cargo test          # 83 unit tests (lexer, parser, typechecker, codegen, lsp)
+cargo test          # 100 unit + 25 integration tests (CLI smoke + NeuralScript)
 examples/run_all.sh # compiles and runs every example
 glyphc test -i examples/fifteen.glyph
 ```

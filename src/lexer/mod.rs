@@ -72,7 +72,7 @@ pub enum Token {
     Star,
     Slash,
     Percent,
-    Concat,       // ++
+    Concat, // ++
     Eq,
     Neq,
     Lt,
@@ -85,17 +85,17 @@ pub enum Token {
     Semicolon,
     Colon,
     DoubleColon,
-    Arrow,        // ->
-    ArrowLeft,    // <-
-    Pipe,         // |
-    FatArrow,     // =>
-    AmpAmp,       // &&
-    PipePipe,     // ||
-    Bang,         // !
-    Ref,          // &
-    DotDot,       // ..
-    DotDotEq,     // ..=
-    Underscore,   // _
+    Arrow,      // ->
+    ArrowLeft,  // <-
+    Pipe,       // |
+    FatArrow,   // =>
+    AmpAmp,     // &&
+    PipePipe,   // ||
+    Bang,       // !
+    Ref,        // &
+    DotDot,     // ..
+    DotDotEq,   // ..=
+    Underscore, // _
 
     // Delimiters
     LBrace,
@@ -107,7 +107,7 @@ pub enum Token {
 
     // Special
     Eof,
-    Pound,        // # (map literal prefix)
+    Pound, // # (map literal prefix)
 }
 
 #[derive(Debug, Clone)]
@@ -245,55 +245,53 @@ impl Lexer {
         let mut is_float = false;
 
         // Check for hex, octal, binary prefix
-        if self.peek() == Some('0') {
-            if self.pos + 1 < self.input.len() {
-                let next = self.input[self.pos + 1];
-                if next == 'x' || next == 'X' {
-                    // Hex literal
-                    num.push('0');
-                    num.push('x');
-                    self.advance();
-                    self.advance();
-                    while let Some(ch) = self.peek() {
-                        if ch.is_ascii_hexdigit() || ch == '_' {
-                            num.push(ch);
-                            self.advance();
-                        } else {
-                            break;
-                        }
+        if self.peek() == Some('0') && self.pos + 1 < self.input.len() {
+            let next = self.input[self.pos + 1];
+            if next == 'x' || next == 'X' {
+                // Hex literal
+                num.push('0');
+                num.push('x');
+                self.advance();
+                self.advance();
+                while let Some(ch) = self.peek() {
+                    if ch.is_ascii_hexdigit() || ch == '_' {
+                        num.push(ch);
+                        self.advance();
+                    } else {
+                        break;
                     }
-                    return Ok((num, false));
-                } else if next == 'o' || next == 'O' {
-                    // Octal literal
-                    num.push('0');
-                    num.push('o');
-                    self.advance();
-                    self.advance();
-                    while let Some(ch) = self.peek() {
-                        if matches!(ch, '0'..='7' | '_') {
-                            num.push(ch);
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-                    return Ok((num, false));
-                } else if next == 'b' || next == 'B' {
-                    // Binary literal
-                    num.push('0');
-                    num.push('b');
-                    self.advance();
-                    self.advance();
-                    while let Some(ch) = self.peek() {
-                        if matches!(ch, '0' | '1' | '_') {
-                            num.push(ch);
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-                    return Ok((num, false));
                 }
+                return Ok((num, false));
+            } else if next == 'o' || next == 'O' {
+                // Octal literal
+                num.push('0');
+                num.push('o');
+                self.advance();
+                self.advance();
+                while let Some(ch) = self.peek() {
+                    if matches!(ch, '0'..='7' | '_') {
+                        num.push(ch);
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                return Ok((num, false));
+            } else if next == 'b' || next == 'B' {
+                // Binary literal
+                num.push('0');
+                num.push('b');
+                self.advance();
+                self.advance();
+                while let Some(ch) = self.peek() {
+                    if matches!(ch, '0' | '1' | '_') {
+                        num.push(ch);
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                return Ok((num, false));
             }
         }
 
@@ -316,8 +314,8 @@ impl Lexer {
                 is_float = true;
                 num.push(ch);
                 self.advance();
-                if self.peek() == Some('+') || self.peek() == Some('-') {
-                    num.push(self.peek().unwrap());
+                if let Some(sign @ ('+' | '-')) = self.peek() {
+                    num.push(sign);
                     self.advance();
                 }
             } else {
@@ -505,9 +503,17 @@ impl Lexer {
                             self.column -= 1;
                             let (num_str, is_float) = self.read_number()?;
                             if is_float {
-                                Token::Float(num_str.parse().map_err(|_| LexerError::InvalidNumber(line, column))?)
+                                Token::Float(
+                                    num_str
+                                        .parse()
+                                        .map_err(|_| LexerError::InvalidNumber(line, column))?,
+                                )
                             } else {
-                                Token::Integer(num_str.parse().map_err(|_| LexerError::InvalidNumber(line, column))?)
+                                Token::Integer(
+                                    num_str
+                                        .parse()
+                                        .map_err(|_| LexerError::InvalidNumber(line, column))?,
+                                )
                             }
                         }
 
@@ -520,43 +526,43 @@ impl Lexer {
                             if ident == "_" {
                                 Token::Underscore
                             } else {
-                            match ident.as_str() {
-                                "let" => Token::Let,
-                                "mut" => Token::Mut,
-                                "if" => Token::If,
-                                "else" => Token::Else,
-                                "match" => Token::Match,
-                                "return" => Token::Return,
-                                "for" => Token::For,
-                                "in" => Token::In,
-                                "loop" => Token::Loop,
-                                "while" => Token::While,
-                                "break" => Token::Break,
-                                "continue" => Token::Continue,
-                                "spawn" => Token::Spawn,
-                                "await" => Token::Await,
-                                "select" => Token::Select,
-                                "timeout" => Token::Timeout,
-                                "default" => Token::Default,
-                                "async" => Token::Async,
-                                "true" => Token::True,
-                                "false" => Token::False,
-                                "as" => Token::As,
-                                "String" => Token::TypeString,
-                                "UInt64" => Token::TypeUInt64,
-                                "Int64" => Token::TypeInt64,
-                                "Float64" => Token::TypeFloat64,
-                                "Bool" => Token::TypeBool,
-                                "Void" => Token::TypeVoid,
-                                "Bytes" => Token::TypeBytes,
-                                "List" => Token::TypeList,
-                                "Map" => Token::TypeMap,
-                                "Result" => Token::TypeResult,
-                                "Option" => Token::TypeOption,
-                                "Async" => Token::TypeAsync,
-                                "Channel" => Token::TypeChannel,
-                                _ => Token::Identifier(ident),
-                            }
+                                match ident.as_str() {
+                                    "let" => Token::Let,
+                                    "mut" => Token::Mut,
+                                    "if" => Token::If,
+                                    "else" => Token::Else,
+                                    "match" => Token::Match,
+                                    "return" => Token::Return,
+                                    "for" => Token::For,
+                                    "in" => Token::In,
+                                    "loop" => Token::Loop,
+                                    "while" => Token::While,
+                                    "break" => Token::Break,
+                                    "continue" => Token::Continue,
+                                    "spawn" => Token::Spawn,
+                                    "await" => Token::Await,
+                                    "select" => Token::Select,
+                                    "timeout" => Token::Timeout,
+                                    "default" => Token::Default,
+                                    "async" => Token::Async,
+                                    "true" => Token::True,
+                                    "false" => Token::False,
+                                    "as" => Token::As,
+                                    "String" => Token::TypeString,
+                                    "UInt64" => Token::TypeUInt64,
+                                    "Int64" => Token::TypeInt64,
+                                    "Float64" => Token::TypeFloat64,
+                                    "Bool" => Token::TypeBool,
+                                    "Void" => Token::TypeVoid,
+                                    "Bytes" => Token::TypeBytes,
+                                    "List" => Token::TypeList,
+                                    "Map" => Token::TypeMap,
+                                    "Result" => Token::TypeResult,
+                                    "Option" => Token::TypeOption,
+                                    "Async" => Token::TypeAsync,
+                                    "Channel" => Token::TypeChannel,
+                                    _ => Token::Identifier(ident),
+                                }
                             }
                         }
 
@@ -600,9 +606,14 @@ mod tests {
     fn test_string_literal() {
         let mut lexer = Lexer::new(r#""hello world""#);
         let tokens = lexer.tokenize().unwrap();
-        assert_eq!(tokens[0].token, Token::StringLiteral("hello world".to_string()));
+        assert_eq!(
+            tokens[0].token,
+            Token::StringLiteral("hello world".to_string())
+        );
     }
 
+    // This intentionally checks the lexer on a decimal approximation to pi.
+    #[allow(clippy::approx_constant)]
     #[test]
     fn test_number_literals() {
         let mut lexer = Lexer::new("42 3.14");

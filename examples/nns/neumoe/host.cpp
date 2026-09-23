@@ -1,7 +1,7 @@
 // Host driver for the NeuMoE/Static-MoE/Dense MX450 study.
 //
 // Build sequence (run.sh):
-//   nsc  examples/neumoe/<net>.ns --cuda --runtime > <net>_driver.cu
+//   glyphc nns examples/nns/neumoe/<net>.ns --cuda --runtime > <net>_driver.cu
 //   nvcc <net>_driver.cu host.cpp -I <repo> -o <net>_driver   (+ -arch=sm_75)
 //
 // The driver is written generically against the ns_runtime.h C-ABI and the

@@ -1,5 +1,8 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! AST types — port of `ns/parser/ast.hpp` + `ast.cpp`.
+
+use std::fmt;
 
 use super::token::{Token, TokenType};
 
@@ -98,12 +101,14 @@ impl DimExpr {
     pub fn is_symbolic(&self) -> bool {
         self.kind == DimExprKind::Symbolic
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl fmt::Display for DimExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
-            DimExprKind::Const => self.const_value.to_string(),
-            DimExprKind::Symbolic => self.symbolic_name.clone(),
-            DimExprKind::Dynamic => "Dynamic".to_string(),
+            DimExprKind::Const => write!(f, "{}", self.const_value),
+            DimExprKind::Symbolic => f.write_str(&self.symbolic_name),
+            DimExprKind::Dynamic => f.write_str("Dynamic"),
         }
     }
 }
@@ -127,18 +132,19 @@ impl TensorType {
     pub fn is_dynamic(&self) -> bool {
         self.dims.iter().any(|d| d.is_dynamic())
     }
+}
 
-    pub fn to_string(&self) -> String {
-        let mut result = String::from("Tensor[");
+impl fmt::Display for TensorType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Tensor[")?;
         for (i, dim) in self.dims.iter().enumerate() {
             if i > 0 {
-                result.push_str(", ");
+                f.write_str(", ")?;
             }
-            result.push_str(&dim.to_string());
+            write!(f, "{}", dim)?;
         }
-        result.push_str("] ");
-        result.push_str(self.dtype.name());
-        result
+        f.write_str("] ")?;
+        f.write_str(self.dtype.name())
     }
 }
 
@@ -171,11 +177,19 @@ impl TypeNode {
     }
 
     pub fn scalar(dt: Dtype) -> Self {
-        TypeNode::new(TypeKind::Scalar, TensorType::new(Vec::new(), Dtype::Float32), dt)
+        TypeNode::new(
+            TypeKind::Scalar,
+            TensorType::new(Vec::new(), Dtype::Float32),
+            dt,
+        )
     }
 
     pub fn unknown() -> Self {
-        TypeNode::new(TypeKind::Unknown, TensorType::new(Vec::new(), Dtype::Float32), Dtype::Float32)
+        TypeNode::new(
+            TypeKind::Unknown,
+            TensorType::new(Vec::new(), Dtype::Float32),
+            Dtype::Float32,
+        )
     }
 
     pub fn is_tensor(&self) -> bool {

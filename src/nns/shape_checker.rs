@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Shape & type checker — port of `ns/typechecker/shape_checker.cpp`.
 
 use super::ast::{DimExpr, Dtype, Expr, ExprKind, Program, Stmt, StmtKind, TensorType, TypeNode};
@@ -48,13 +49,13 @@ impl LayerKind {
 #[derive(Debug, Clone)]
 pub struct LayerRule {
     pub kind: LayerKind,
-    pub in_: DimExpr,        // Dense/Linear input features
-    pub out: DimExpr,        // Dense/Linear output features
-    pub emb_vocab: DimExpr,  // Embedding vocab
-    pub emb_dim: DimExpr,    // Embedding dim
-    pub num_heads: DimExpr,  // Attention
-    pub num_experts: DimExpr, // MoE capacity (compile-time slot count)
-    pub ffn_dim: DimExpr,    // MoE expert FFN hidden width (default 4*emb_dim)
+    pub in_: DimExpr,             // Dense/Linear input features
+    pub out: DimExpr,             // Dense/Linear output features
+    pub emb_vocab: DimExpr,       // Embedding vocab
+    pub emb_dim: DimExpr,         // Embedding dim
+    pub num_heads: DimExpr,       // Attention
+    pub num_experts: DimExpr,     // MoE capacity (compile-time slot count)
+    pub ffn_dim: DimExpr,         // MoE expert FFN hidden width (default 4*emb_dim)
     pub initial_experts: DimExpr, // MoE experts active at init
     pub activation: String,
     pub rate: f64, // Dropout rate
@@ -149,6 +150,12 @@ pub struct ShapeChecker {
     layer_rules_: HashMap<String, LayerRule>,
 }
 
+impl Default for ShapeChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShapeChecker {
     pub fn new() -> Self {
         ShapeChecker {
@@ -174,7 +181,8 @@ impl ShapeChecker {
                 if let Some(alias_expr) = &stmt.alias_expr {
                     if alias_expr.kind == ExprKind::LiteralInt {
                         let v: i64 = alias_expr.token.value.parse().unwrap_or(0);
-                        self.type_aliases_.insert(stmt.alias_name.clone(), DimExpr::constant(v));
+                        self.type_aliases_
+                            .insert(stmt.alias_name.clone(), DimExpr::constant(v));
                     } else if alias_expr.kind == ExprKind::Identifier {
                         // Could be symbolic name (e.g., Dynamic) or ref to another alias
                         self.type_aliases_.insert(
@@ -268,7 +276,9 @@ impl ShapeChecker {
             if var_type.is_tensor() {
                 for dim in var_type.tensor_type.dims.iter_mut() {
                     if dim.is_symbolic() {
-                        if let Some(resolved) = resolve_dim_symbolic(&dim.symbolic_name, &self.type_aliases_) {
+                        if let Some(resolved) =
+                            resolve_dim_symbolic(&dim.symbolic_name, &self.type_aliases_)
+                        {
                             if resolved.is_const() {
                                 *dim = resolved;
                             }
@@ -278,54 +288,69 @@ impl ShapeChecker {
                     }
                 }
             }
-            self.variables_.insert(stmt.var_name.clone(), var_type.tensor_type.clone().into_type_node_scalar_check());
+            self.variables_.insert(
+                stmt.var_name.clone(),
+                var_type.tensor_type.clone().into_type_node_scalar_check(),
+            );
         }
 
         if let Some(init) = stmt.init_expr.as_mut() {
             self.check_expr(init);
-            if init.inferred_type.is_some() && stmt.var_type.is_some() {
-                // Type-check init expr against declared type
-                let (var_tensor, var_line, var_col) = {
-                    let vt = stmt.var_type.as_ref().unwrap();
-                    (vt.tensor_type.clone(), stmt.token.line, stmt.token.column)
-                };
-                let init_tensor = init
-                    .inferred_type
-                    .as_ref()
-                    .and_then(|t| if t.is_tensor() { Some(t.tensor_type.clone()) } else { None });
-                if let Some(actual) = init_tensor {
-                    if stmt.var_type.as_ref().unwrap().is_tensor() {
-                        let mut declared = var_tensor;
-                        if declared.dims.len() != actual.dims.len() {
-                            let produced = actual.dims.len();
-                            self.report(
-                                var_line,
-                                var_col,
-                                &format!(
-                                    "Dimension rank mismatch: declared {} but expression produces rank-{}",
-                                    declared.to_string(),
-                                    produced
-                                ),
-                            );
+            if init.inferred_type.is_some() {
+                if let Some(vt) = stmt.var_type.as_ref() {
+                    // Type-check init expr against declared type
+                    let var_tensor = vt.tensor_type.clone();
+                    let var_line = stmt.token.line;
+                    let var_col = stmt.token.column;
+                    let declared_is_tensor = vt.is_tensor();
+                    let init_tensor = init.inferred_type.as_ref().and_then(|t| {
+                        if t.is_tensor() {
+                            Some(t.tensor_type.clone())
                         } else {
-                            for i in 0..declared.dims.len() {
-                                let decl_dim = declared.dims[i].clone();
-                                let ok = self.unify_dim(&decl_dim, &actual.dims[i], var_line, var_col);
-                                // Update variable's type with unified dim
-                                if ok {
-                                    declared.dims[i] = decl_dim;
+                            None
+                        }
+                    });
+                    if let Some(actual) = init_tensor {
+                        if declared_is_tensor {
+                            let mut declared = var_tensor;
+                            if declared.dims.len() != actual.dims.len() {
+                                let produced = actual.dims.len();
+                                self.report(
+                                    var_line,
+                                    var_col,
+                                    &format!(
+                                        "Dimension rank mismatch: declared {} but expression produces rank-{}",
+                                        declared,
+                                        produced
+                                    ),
+                                );
+                            } else {
+                                for i in 0..declared.dims.len() {
+                                    let decl_dim = declared.dims[i].clone();
+                                    let ok = self.unify_dim(
+                                        &decl_dim,
+                                        &actual.dims[i],
+                                        var_line,
+                                        var_col,
+                                    );
+                                    // Update variable's type with unified dim
+                                    if ok {
+                                        declared.dims[i] = decl_dim;
+                                    }
                                 }
-                            }
-                            if let Some(vt) = stmt.var_type.as_mut() {
-                                vt.tensor_type.dims = declared.dims.clone();
+                                if let Some(vt) = stmt.var_type.as_mut() {
+                                    vt.tensor_type.dims = declared.dims.clone();
+                                }
                             }
                         }
                     }
                 }
             }
-            if stmt.var_type.is_some() {
-                let vt = stmt.var_type.as_ref().unwrap();
-                self.variables_.insert(stmt.var_name.clone(), vt.tensor_type.clone().into_type_node_scalar_check());
+            if let Some(vt) = stmt.var_type.as_ref() {
+                self.variables_.insert(
+                    stmt.var_name.clone(),
+                    vt.tensor_type.clone().into_type_node_scalar_check(),
+                );
             } else if let Some(t) = &init.inferred_type {
                 // Untyped declaration: bind to the inferred type of the init expr.
                 self.variables_.insert(stmt.var_name.clone(), (**t).clone());
@@ -379,7 +404,8 @@ impl ShapeChecker {
                         self.bind_alias_dim(dim);
                         *dim = self.resolve_dim(dim);
                     }
-                    self.variables_.insert(method.var_name.clone(), TypeNode::tensor(tt.clone()));
+                    self.variables_
+                        .insert(method.var_name.clone(), TypeNode::tensor(tt.clone()));
                     // refresh source var_type so declared input/output capture expanded dims
                     var_type.tensor_type = tt;
                 }
@@ -390,7 +416,8 @@ impl ShapeChecker {
         let layer_names: Vec<String> = stmt.layers.iter().map(|l| l.layer_name.clone()).collect();
         for layer in stmt.layers.iter_mut() {
             let rule = self.parse_layer_rule(layer);
-            self.layer_rules_.insert(layer.layer_name.clone(), rule.clone());
+            self.layer_rules_
+                .insert(layer.layer_name.clone(), rule.clone());
             self.check_stmt(layer);
             // Register the trainable weight matrix as a tensor variable.
             if (layer.layer_type == "Dense" || layer.layer_type == "Linear")
@@ -398,23 +425,30 @@ impl ShapeChecker {
             {
                 let uses_static = {
                     let r = self.layer_rules_.get(&layer.layer_name);
-                    r.map(|r| r.in_.kind != super::ast::DimExprKind::Dynamic && r.out.kind != super::ast::DimExprKind::Dynamic)
-                        .unwrap_or(false)
+                    r.map(|r| {
+                        r.in_.kind != super::ast::DimExprKind::Dynamic
+                            && r.out.kind != super::ast::DimExprKind::Dynamic
+                    })
+                    .unwrap_or(false)
                 };
                 if uses_static {
-                    let (din, dout) = {
-                        let r = self.layer_rules_.get(&layer.layer_name).unwrap();
-                        (r.in_.clone(), r.out.clone())
+                    let Some(rule) = self.layer_rules_.get(&layer.layer_name) else {
+                        self.report(
+                            layer.token.line,
+                            layer.token.column,
+                            &format!("Missing inference rule for layer '{}'", layer.layer_name),
+                        );
+                        continue;
                     };
-                    let mut din = din;
-                    let mut dout = dout;
+                    let (mut din, mut dout) = (rule.in_.clone(), rule.out.clone());
                     self.bind_alias_dim(&mut din);
                     self.bind_alias_dim(&mut dout);
                     if din.is_const() && dout.is_const() {
                         let mut wt = TensorType::new(Vec::new(), Dtype::Float32);
                         wt.dtype = Dtype::Float32;
                         wt.dims = vec![din, dout];
-                        self.variables_.insert(layer.layer_name.clone(), TypeNode::tensor(wt));
+                        self.variables_
+                            .insert(layer.layer_name.clone(), TypeNode::tensor(wt));
                     }
                 }
             }
@@ -425,10 +459,11 @@ impl ShapeChecker {
         let declared_input = stmt
             .methods
             .iter()
-            .find(|m| m.kind == StmtKind::VarDecl && m.var_name == "input" && m.var_type.is_some())
-            .map(|m| {
-                let t = m.var_type.as_ref().unwrap();
-                TypeNode::tensor(t.tensor_type.clone())
+            .find(|m| m.kind == StmtKind::VarDecl && m.var_name == "input")
+            .and_then(|m| {
+                m.var_type
+                    .as_ref()
+                    .map(|t| TypeNode::tensor(t.tensor_type.clone()))
             });
 
         // Check forward
@@ -446,7 +481,14 @@ impl ShapeChecker {
                             p.type_ = Some(Box::new(TypeNode::scalar(Dtype::Float32)));
                         }
                     }
-                    let t = p.type_.as_ref().unwrap();
+                    let Some(t) = p.type_.as_ref() else {
+                        self.report(
+                            method.token.line,
+                            method.token.column,
+                            &format!("Missing type for forward parameter '{}'", p.name),
+                        );
+                        continue;
+                    };
                     self.variables_.insert(p.name.clone(), (**t).clone());
                 }
             }
@@ -461,7 +503,8 @@ impl ShapeChecker {
                 if let Some(t) = &p.type_ {
                     self.variables_.insert(p.name.clone(), (**t).clone());
                 } else {
-                    self.variables_.insert(p.name.clone(), TypeNode::scalar(Dtype::Float32));
+                    self.variables_
+                        .insert(p.name.clone(), TypeNode::scalar(Dtype::Float32));
                 }
             }
         }
@@ -470,10 +513,11 @@ impl ShapeChecker {
         let declared_output = stmt
             .methods
             .iter()
-            .find(|m| m.kind == StmtKind::VarDecl && m.var_name == "output" && m.var_type.is_some())
-            .map(|m| {
-                let t = m.var_type.as_ref().unwrap();
-                TypeNode::tensor(t.tensor_type.clone())
+            .find(|m| m.kind == StmtKind::VarDecl && m.var_name == "output")
+            .and_then(|m| {
+                m.var_type
+                    .as_ref()
+                    .map(|t| TypeNode::tensor(t.tensor_type.clone()))
             });
 
         // Check the methods
@@ -576,7 +620,17 @@ impl ShapeChecker {
                 expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Bool)));
             }
             ExprKind::LiteralString => {
-                expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Int64))); // placeholder
+                // NNS TypeNode/Dtype has no distinct String variant (only numeric/bool tensor dtypes).
+                // Keep Int64 as a placeholder so existing codegen paths that never expect real strings
+                // continue to type-check, but surface a diagnostic so string-typed parameters do not
+                // silently masquerade as integers. If a proper `Dtype::String` / `TypeNode::string()`
+                // is added, replace this branch with that type and remove the diagnostic.
+                expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Int64)));
+                self.report(
+                    expr.token.line,
+                    expr.token.column,
+                    "String literal encountered: NNS has no String type — string parameters are not supported (inferred as Int64 placeholder)",
+                );
             }
             ExprKind::Identifier => {
                 let name = expr.token.value.clone();
@@ -588,7 +642,11 @@ impl ShapeChecker {
                 } else if name == "Dynamic" {
                     expr.inferred_type = None;
                 } else {
-                    self.report(expr.token.line, expr.token.column, &format!("Undefined variable '{}'", name));
+                    self.report(
+                        expr.token.line,
+                        expr.token.column,
+                        &format!("Undefined variable '{}'", name),
+                    );
                 }
             }
             ExprKind::MatmulOp => {
@@ -598,10 +656,16 @@ impl ShapeChecker {
                 if let Some(r) = expr.right.as_mut() {
                     self.check_expr(r);
                 }
-                let (ll, rr) = {
-                    let l = expr.left.as_ref().unwrap();
-                    let r = expr.right.as_ref().unwrap();
-                    (l.inferred_type.clone(), r.inferred_type.clone())
+                let (ll, rr) = match (expr.left.as_ref(), expr.right.as_ref()) {
+                    (Some(l), Some(r)) => (l.inferred_type.clone(), r.inferred_type.clone()),
+                    _ => {
+                        self.report(
+                            expr.token.line,
+                            expr.token.column,
+                            "Matmul @ requires two operands",
+                        );
+                        return;
+                    }
                 };
                 if let (Some(lt), Some(rt)) = (&ll, &rr) {
                     if lt.is_tensor() && rt.is_tensor() {
@@ -627,23 +691,32 @@ impl ShapeChecker {
                     self.check_expr(r);
                 }
                 let t = expr.token.type_;
-                let (ll, rr) = {
-                    let l = expr.left.as_ref().unwrap();
-                    let r = expr.right.as_ref().unwrap();
-                    (l.inferred_type.clone(), r.inferred_type.clone())
+                let (ll, rr) = match (expr.left.as_ref(), expr.right.as_ref()) {
+                    (Some(l), Some(r)) => (l.inferred_type.clone(), r.inferred_type.clone()),
+                    _ => {
+                        self.report(
+                            expr.token.line,
+                            expr.token.column,
+                            "Binary operator requires two operands",
+                        );
+                        return;
+                    }
                 };
                 if t == TokenType::OpAssign {
                     expr.inferred_type = ll;
-                } else if ll.is_some() && rr.is_some() {
-                    let lt = ll.as_ref().unwrap();
-                    let rt = rr.as_ref().unwrap();
+                } else if let (Some(lt), Some(rt)) = (&ll, &rr) {
                     if lt.is_tensor() && rt.is_tensor() {
                         let (lhs, rhs) = (lt.tensor_type.clone(), rt.tensor_type.clone());
                         // Elementwise array op: same shapes
                         let mut ok = true;
                         if lhs.dims.len() == rhs.dims.len() {
                             for i in 0..lhs.dims.len() {
-                                if !self.unify_dim(&lhs.dims[i], &rhs.dims[i], expr.token.line, expr.token.column) {
+                                if !self.unify_dim(
+                                    &lhs.dims[i],
+                                    &rhs.dims[i],
+                                    expr.token.line,
+                                    expr.token.column,
+                                ) {
                                     ok = false;
                                 }
                             }
@@ -721,7 +794,13 @@ impl ShapeChecker {
                     for name in &stage_names {
                         if let Some(rule) = self.layer_rules_.get(name).cloned() {
                             let mut next = TensorType::new(Vec::new(), Dtype::Float32);
-                            self.apply_layer(&rule, &ct, &mut next, expr.token.line, expr.token.column);
+                            self.apply_layer(
+                                &rule,
+                                &ct,
+                                &mut next,
+                                expr.token.line,
+                                expr.token.column,
+                            );
                             ct = next;
                         }
                         // Unknown stage: treat as shape-preserving passthrough.
@@ -729,8 +808,8 @@ impl ShapeChecker {
                     current_type = Some(self.resolve_tensor(&ct));
                 }
 
-                if current_type.is_some() {
-                    expr.inferred_type = Some(Box::new(TypeNode::tensor(current_type.unwrap())));
+                if let Some(current_type) = current_type {
+                    expr.inferred_type = Some(Box::new(TypeNode::tensor(current_type)));
                 }
             }
             ExprKind::FunctionCall => {
@@ -743,7 +822,13 @@ impl ShapeChecker {
                 let func_name = expr
                     .operand
                     .as_ref()
-                    .map(|o| if o.kind == ExprKind::Identifier { o.token.value.clone() } else { String::new() })
+                    .map(|o| {
+                        if o.kind == ExprKind::Identifier {
+                            o.token.value.clone()
+                        } else {
+                            String::new()
+                        }
+                    })
                     .unwrap_or_default();
                 match func_name.as_str() {
                     "cross_entropy" => {
@@ -793,7 +878,8 @@ impl ShapeChecker {
                             if let Some(t) = &a.inferred_type {
                                 expr.inferred_type = Some(Box::new((**t).clone()));
                             } else {
-                                expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Float32)));
+                                expr.inferred_type =
+                                    Some(Box::new(TypeNode::scalar(Dtype::Float32)));
                             }
                         } else {
                             expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Float32)));
@@ -820,7 +906,11 @@ impl ShapeChecker {
                                                 if expr.args.len() >= 3
                                                     && expr.args[2].kind == ExprKind::LiteralInt
                                                 {
-                                                    axis = expr.args[2].token.value.parse().unwrap_or(1);
+                                                    axis = expr.args[2]
+                                                        .token
+                                                        .value
+                                                        .parse()
+                                                        .unwrap_or(1);
                                                 }
                                                 if axis == 0 {
                                                     let a = tt.dims[0].const_value;
@@ -845,10 +935,13 @@ impl ShapeChecker {
                                         if expr.args[1].kind == ExprKind::LiteralInt {
                                             axis = expr.args[1].token.value.parse().unwrap_or(1);
                                         }
-                                        tt.dims[if axis == 0 { 0 } else { 1 }] = DimExpr::constant(e - s);
+                                        tt.dims[if axis == 0 { 0 } else { 1 }] =
+                                            DimExpr::constant(e - s);
                                     } else if fname == "index" && tt.dims.len() == 2 {
                                         let mut axis: i64 = 1;
-                                        if expr.args.len() >= 2 && expr.args[1].kind == ExprKind::LiteralInt {
+                                        if expr.args.len() >= 2
+                                            && expr.args[1].kind == ExprKind::LiteralInt
+                                        {
                                             axis = expr.args[1].token.value.parse().unwrap_or(1);
                                         }
                                         let nidx = expr.args.len() as i64 - 2;
@@ -861,7 +954,8 @@ impl ShapeChecker {
                                     expr.inferred_type = Some(Box::new(TypeNode::tensor(tt)));
                                 }
                             } else {
-                                expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Float32)));
+                                expr.inferred_type =
+                                    Some(Box::new(TypeNode::scalar(Dtype::Float32)));
                             }
                         } else {
                             expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Float32)));
@@ -873,7 +967,8 @@ impl ShapeChecker {
                             if let Some(t) = &a.inferred_type {
                                 expr.inferred_type = Some(Box::new((**t).clone()));
                             } else {
-                                expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Float32)));
+                                expr.inferred_type =
+                                    Some(Box::new(TypeNode::scalar(Dtype::Float32)));
                             }
                         } else {
                             expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Float32)));
@@ -884,7 +979,8 @@ impl ShapeChecker {
                             if let Some(rt) = sig.return_type {
                                 expr.inferred_type = Some(Box::new(rt));
                             } else {
-                                expr.inferred_type = Some(Box::new(TypeNode::scalar(Dtype::Float32)));
+                                expr.inferred_type =
+                                    Some(Box::new(TypeNode::scalar(Dtype::Float32)));
                             }
                         } else {
                             self.report(
@@ -954,7 +1050,10 @@ impl ShapeChecker {
             return false;
         }
         // Report informative message if mismatch
-        if inner_lhs.is_const() && inner_rhs.is_const() && inner_lhs.const_value != inner_rhs.const_value {
+        if inner_lhs.is_const()
+            && inner_rhs.is_const()
+            && inner_lhs.const_value != inner_rhs.const_value
+        {
             self.report(
                 line,
                 col,
@@ -1030,8 +1129,14 @@ impl ShapeChecker {
         if a == b {
             return;
         }
-        let a_binding = self.symbols_.get(a).map(|s| (s.bound_to_const, s.const_value)).clone();
-        let b_binding = self.symbols_.get(b).map(|s| (s.bound_to_const, s.const_value)).clone();
+        let a_binding = self
+            .symbols_
+            .get(a)
+            .map(|s| (s.bound_to_const, s.const_value));
+        let b_binding = self
+            .symbols_
+            .get(b)
+            .map(|s| (s.bound_to_const, s.const_value));
         let a_binds: Option<String> = self.symbols_.get(a).map(|s| s.binds_to.clone()).clone();
         // If one side is already bound to a constant, propagate it.
         if let Some((true, v)) = a_binding {
@@ -1101,7 +1206,11 @@ impl ShapeChecker {
                 .as_ref()
                 .map(|e| e.token.value.clone())
                 .unwrap_or_default();
-            let is_num = v.as_bytes().first().map(|b| b.is_ascii_digit()).unwrap_or(false);
+            let is_num = v
+                .as_bytes()
+                .first()
+                .map(|b| b.is_ascii_digit())
+                .unwrap_or(false);
             match p.name.as_str() {
                 "in" | "in_features" => {
                     if is_num {
@@ -1185,7 +1294,10 @@ impl ShapeChecker {
             self.report(
                 line,
                 col,
-                &format!("Layer cannot be applied to input of rank {}", input.dims.len()),
+                &format!(
+                    "Layer cannot be applied to input of rank {}",
+                    input.dims.len()
+                ),
             );
             *out = input.clone();
             return;
@@ -1267,20 +1379,26 @@ network N {
         let mut module = mlir.compile(&mut prog);
         let mut fuse = FusionPass::new();
         fuse.run(&mut module);
-        let mut opts = CodegenOptions::default();
-        opts.backend = backend;
-        opts.emit_runtime_driver = true;
-        let cg = CodeGenerator::default();
+        let opts = CodegenOptions {
+            backend,
+            emit_runtime_driver: true,
+            ..CodegenOptions::default()
+        };
+        let cg = CodeGenerator;
         cg.generate(&module, &opts).map_err(|e| e.to_string())
     }
 
     #[test]
     fn dynamic_dims_cpu_negative_returns_error() {
         let res = codegen_result(DYNAMIC_IN_DENSE, TargetBackend::CpuCxx);
-        assert!(res.is_err(), "expected dynamic-dims network to be rejected, got Ok");
+        assert!(
+            res.is_err(),
+            "expected dynamic-dims network to be rejected, got Ok"
+        );
         let msg = res.unwrap_err();
         assert!(
-            msg.contains("cannot infer static shape") && msg.contains("dynamic dims are not supported"),
+            msg.contains("cannot infer static shape")
+                && msg.contains("dynamic dims are not supported"),
             "unexpected error message: {}",
             msg
         );
@@ -1289,10 +1407,14 @@ network N {
     #[test]
     fn dynamic_dims_cuda_negative_returns_error() {
         let res = codegen_result(DYNAMIC_IN_DENSE, TargetBackend::Cuda);
-        assert!(res.is_err(), "expected dynamic-dims network to be rejected on CUDA");
+        assert!(
+            res.is_err(),
+            "expected dynamic-dims network to be rejected on CUDA"
+        );
         let msg = res.unwrap_err();
         assert!(
-            msg.contains("cannot infer static shape") && msg.contains("dynamic dims are not supported"),
+            msg.contains("cannot infer static shape")
+                && msg.contains("dynamic dims are not supported"),
             "unexpected CUDA error: {}",
             msg
         );
@@ -1315,13 +1437,21 @@ network N {
     fn dynamic_batch_only_is_allowed() {
         // Only the batch dim is Dynamic — this is the single allowed dynamic dim
         let res = codegen_result(VALID_DYNAMIC_BATCH, TargetBackend::CpuCxx);
-        assert!(res.is_ok(), "valid dynamic-batch network should codegen, got Err: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "valid dynamic-batch network should codegen, got Err: {:?}",
+            res.err()
+        );
     }
 
     #[test]
     fn valid_network_produces_code() {
         let res = codegen_result(VALID_DYNAMIC_BATCH, TargetBackend::Cuda);
-        assert!(res.is_ok(), "valid network CUDA codegen failed: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "valid network CUDA codegen failed: {:?}",
+            res.err()
+        );
         let code = res.unwrap();
         assert!(!code.is_empty());
     }

@@ -1,0 +1,64 @@
+{
+  "name": "glyph-vscode",
+  "displayName": "Glyph",
+  "description": "Glyph language support and LSP client",
+  "version": "0.1.0",
+  "publisher": "MrModelOS",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages", "Formatters"],
+  "activationEvents": [],
+  "main": "./client.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "glyph",
+        "aliases": ["Glyph", "glyph"],
+        "extensions": [".glyph"],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "neural-script",
+        "aliases": ["NeuralScript", "neural-script"],
+        "extensions": [".ns"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "glyph",
+        "scopeName": "source.glyph",
+        "path": "./syntaxes/glyph.tmLanguage.json"
+      },
+      {
+        "language": "neural-script",
+        "scopeName": "source.neural-script",
+        "path": "./syntaxes/glyph.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "glyph.restartServer",
+        "title": "Glyph: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Glyph",
+      "properties": {
+        "glyphc.path": {
+          "type": "string",
+          "default": "glyphc",
+          "description": "Path to the glyphc executable used by the language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

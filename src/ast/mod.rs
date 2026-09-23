@@ -310,7 +310,10 @@ impl Span {
     /// A zero-width span pointing at a single position.
     #[allow(dead_code)] // used by the LSP for cursor diagnostics.
     pub fn point(loc: LineCol) -> Self {
-        Span { start: loc, end: loc }
+        Span {
+            start: loc,
+            end: loc,
+        }
     }
 }
 
@@ -321,7 +324,11 @@ impl std::fmt::Display for Span {
         } else if self.start.line == self.end.line {
             write!(f, "{}:{}-{}", self.start.line, self.start.col, self.end.col)
         } else {
-            write!(f, "{}:{}-{}:{}", self.start.line, self.start.col, self.end.line, self.end.col)
+            write!(
+                f,
+                "{}:{}-{}:{}",
+                self.start.line, self.start.col, self.end.line, self.end.col
+            )
         }
     }
 }

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// NNS port: public API preserved for parity with C++ nsc; not all items are used in current pipeline — intentional, not tech debt
 //! Numeric interpreter over the MLIR module — port of `ns/mlir/eval.cpp`.
 //!
 //! Used by the fusion test to prove that the fused module computes the
@@ -6,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use super::dialect::{FusedopGroup, MLIRInstr, MLIRFunction, MLIRModule, MLIROp};
+use super::dialect::{FusedopGroup, MLIRFunction, MLIRInstr, MLIRModule, MLIROp};
 
 /// A concrete tensor buffer for evaluation.
 #[derive(Debug, Clone)]
@@ -41,13 +42,20 @@ impl ModuleEvaluator {
     }
 
     pub fn bind(&mut self, id: &str, data: Vec<f64>, shape: Vec<i64>) {
-        self.values.insert(id.to_string(), TensorBuffer { data, shape });
+        self.values
+            .insert(id.to_string(), TensorBuffer { data, shape });
     }
 
     /// Evaluate an instruction list starting at `from`, returning the value of
     /// `want` (or fn.return_id if empty). Uses module.fused_groups to interpret
     /// FUSED instructions.
-    pub fn run(&mut self, fn_: &MLIRFunction, mod_: &MLIRModule, want: &str, out: &mut TensorBuffer) -> bool {
+    pub fn run(
+        &mut self,
+        fn_: &MLIRFunction,
+        mod_: &MLIRModule,
+        want: &str,
+        out: &mut TensorBuffer,
+    ) -> bool {
         self.errors.clear();
         for instr in fn_.instructions.iter() {
             if !self.eval_instr(instr, mod_) {
@@ -187,7 +195,9 @@ impl ModuleEvaluator {
     fn eval_instr(&mut self, instr: &MLIRInstr, mod_: &MLIRModule) -> bool {
         match instr.op {
             MLIROp::Matmul => {
-                let (Some(a), Some(b)) = (self.getv(&instr.operands[0]), self.getv(&instr.operands[1])) else {
+                let (Some(a), Some(b)) =
+                    (self.getv(&instr.operands[0]), self.getv(&instr.operands[1]))
+                else {
                     self.errors.push("matmul missing operand".to_string());
                     return false;
                 };
@@ -206,8 +216,14 @@ impl ModuleEvaluator {
                 self.values.insert(instr.result_id.clone(), a.clone()); // inference: identity
                 true
             }
-            MLIROp::Relu | MLIROp::LeakyRelu | MLIROp::Sigmoid | MLIROp::Tanh
-            | MLIROp::Swish | MLIROp::Gelu | MLIROp::Silu | MLIROp::Identity => {
+            MLIROp::Relu
+            | MLIROp::LeakyRelu
+            | MLIROp::Sigmoid
+            | MLIROp::Tanh
+            | MLIROp::Swish
+            | MLIROp::Gelu
+            | MLIROp::Silu
+            | MLIROp::Identity => {
                 let Some(a) = self.getv(&instr.operands[0]) else {
                     return false;
                 };
@@ -267,7 +283,8 @@ impl ModuleEvaluator {
     }
 
     fn eval_fused(&mut self, instr: &MLIRInstr, mod_: &MLIRModule) -> bool {
-        let (Some(a), Some(b)) = (self.getv(&instr.operands[0]), self.getv(&instr.operands[1])) else {
+        let (Some(a), Some(b)) = (self.getv(&instr.operands[0]), self.getv(&instr.operands[1]))
+        else {
             return false;
         };
         let mut c = TensorBuffer {
@@ -284,7 +301,8 @@ impl ModuleEvaluator {
             }
         }
         let Some(group) = group else {
-            self.errors.push(format!("no fusion group for {}", instr.result_id));
+            self.errors
+                .push(format!("no fusion group for {}", instr.result_id));
             return false;
         };
 
