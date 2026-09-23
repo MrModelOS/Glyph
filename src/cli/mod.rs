@@ -1055,6 +1055,79 @@ fn build_project(profile: &str) {
     println!("Build successful: {}", output_path.display());
 }
 
+fn nns_parse_ns_error(msg: &str) -> (u32, u32, String) {
+    // Try to extract " at <line>:<col>" with optional "line " prefix.
+    // Returns (line, col, message) where message is the part after the location,
+    // or prefix before " at " if no suffix exists. Falls back to 1:1.
+    if let Some(pos) = msg.rfind(" at ") {
+        let after_raw = &msg[pos + 4..];
+        let after = after_raw.strip_prefix("line ").unwrap_or(after_raw);
+        // parse line
+        let mut idx = 0usize;
+        let bytes = after.as_bytes();
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if idx > 0 {
+            if let Ok(line) = after[..idx].parse::<u32>() {
+                if idx < bytes.len() && bytes[idx] == b':' {
+                    let mut j = idx + 1;
+                    let col_start = j;
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    if j > col_start {
+                        if let Ok(col) = after[col_start..j].parse::<u32>() {
+                            let rest = &after[j..];
+                            let rest_trim = rest.trim_start_matches(|c| c == ':' || c == ' ').trim();
+                            let prefix = msg[..pos].trim();
+                            // Decide message: for "Expected ... at X:Y: suffix", combine prefix + suffix
+                            // for "Parse error at X:Y: msg", use suffix only
+                            let message = if !rest_trim.is_empty() {
+                                if prefix == "Parse error" || prefix.is_empty() {
+                                    rest_trim.to_string()
+                                } else if prefix.starts_with("Expected") {
+                                    format!("{}: {}", prefix, rest_trim)
+                                } else if prefix.starts_with("Unexpected") && rest_trim.is_empty() {
+                                    prefix.to_string()
+                                } else if rest_trim.len() > 0 && prefix.len() > 0 && !prefix.starts_with("Parse error") {
+                                    // generic: if suffix is non-empty use suffix (e.g. "Unexpected token...")
+                                    rest_trim.to_string()
+                                } else {
+                                    rest_trim.to_string()
+                                }
+                            } else {
+                                if !prefix.is_empty() {
+                                    prefix.to_string()
+                                } else {
+                                    msg.to_string()
+                                }
+                            };
+                            return (line, col, message);
+                        }
+                    }
+                } else {
+                    // only line, no col
+                    let rest = &after[idx..];
+                    let rest_trim = rest.trim_start_matches(|c| c == ':' || c == ' ').trim();
+                    let prefix = msg[..pos].trim();
+                    let message = if !rest_trim.is_empty() {
+                        rest_trim.to_string()
+                    } else if !prefix.is_empty() {
+                        prefix.to_string()
+                    } else {
+                        msg.to_string()
+                    };
+                    return (line, 1, message);
+                }
+            }
+        }
+    }
+    // No location found -> 1:1 with original message
+    // Strip leading "Parse error at ..." fallback if still present (should have been handled)
+    (1, 1, msg.to_string())
+}
+
 fn run_nns(input: &PathBuf, mlir: bool, cpp: bool, cuda: bool, runtime: bool, check: bool, fp16: bool) {
     // Read source file, mirroring nsc's "Cannot open file: <path>"
     let source = match fs::read_to_string(input) {
@@ -1070,7 +1143,9 @@ fn run_nns(input: &PathBuf, mlir: bool, cpp: bool, cuda: bool, runtime: bool, ch
     let tokens = match lexer.tokenize() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            let (line, col, msg) = nns_parse_ns_error(&e.0);
+            eprintln!("Static shape/type errors:");
+            eprintln!("  {}:{}  {}", line, col, msg);
             process::exit(1);
         }
     };
@@ -1080,7 +1155,9 @@ fn run_nns(input: &PathBuf, mlir: bool, cpp: bool, cuda: bool, runtime: bool, ch
     let mut program = match parser.parse_program() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            let (line, col, msg) = nns_parse_ns_error(&e.0);
+            eprintln!("Static shape/type errors:");
+            eprintln!("  {}:{}  {}", line, col, msg);
             process::exit(1);
         }
     };
@@ -1088,11 +1165,14 @@ fn run_nns(input: &PathBuf, mlir: bool, cpp: bool, cuda: bool, runtime: bool, ch
     // Stage 3: Type + shape checking
     let mut checker = crate::nns::shape_checker::ShapeChecker::new();
     if !checker.check(&mut program) {
+        eprintln!("Static shape/type errors:");
         for e in checker.errors() {
-            eprintln!("Error: {}", e.message);
+            let line = if e.line == 0 { 1 } else { e.line };
+            let col = if e.column == 0 { 1 } else { e.column };
+            eprintln!("  {}:{}  {}", line, col, e.message);
         }
         if checker.errors().is_empty() {
-            eprintln!("Error: shape checking failed");
+            eprintln!("  1:1  shape checking failed");
         }
         process::exit(1);
     }
@@ -1138,7 +1218,25 @@ fn run_nns(input: &PathBuf, mlir: bool, cpp: bool, cuda: bool, runtime: bool, ch
             print!("{}", code);
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            let msg = e.0.clone();
+            if msg.contains("cannot infer static shape")
+                || msg.contains("dynamic dims are not supported")
+                || msg.contains("Static shape")
+            {
+                // Surface codegen shape errors with the same header nsc uses
+                let (line, col, m) = nns_parse_ns_error(&msg);
+                // If the message already contains a location prefix, use parsed form;
+                // otherwise fall back to raw codegen message under header.
+                if m != msg || msg.contains(" at ") {
+                    eprintln!("Static shape/type errors:");
+                    eprintln!("  {}:{}  {}", line, col, m);
+                } else {
+                    eprintln!("Static shape/type errors:");
+                    eprintln!("  1:1  {}", msg);
+                }
+            } else {
+                eprintln!("Error: {}", e);
+            }
             process::exit(1);
         }
     }

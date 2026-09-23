@@ -5,6 +5,10 @@ edition = "2021"
 description = "Glyph language compiler"
 license = "MIT"
 
+[lib]
+name = "glyphc"
+path = "src/lib.rs"
+
 [[bin]]
 name = "glyphc"
 path = "src/main.rs"

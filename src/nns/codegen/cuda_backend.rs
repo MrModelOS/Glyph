@@ -1,5 +1,18 @@
+#![allow(dead_code)]
 //! CUDA backend layer: device source snippets spliced into emitted
 //! `.cu` units, ported 1:1 from `NeuralScript/src/codegen/cuda_backend.cpp`.
+
+// FP16 support header: included when CodegenOptions::enable_fp16 is true.
+// Defines NS_DTYPE as __half and enables half2 vectorization comment for
+// NS_LAUNCH_BLOCKS tuning. Used by gen_cuda when fp16 is enabled.
+pub const CUDA_FP16_HEADER: &str = "#include <cuda_fp16.h>\n#define NS_DTYPE __half\n#define NS_FP16 1\n// fp16: using half2\n";
+
+// ROCm/HIP header placeholder: hipified CUDA. Emitted by gen_rocm to make
+// the output distinguishable from pure CUDA.
+pub const ROCM_HEADER: &str = "// ROCm backend: hipified CUDA (placeholder, delegates to CUDA)\n#ifdef __HIP_PLATFORM_AMD__\n#include <hip/hip_runtime.h>\n#include <hip/hip_fp16.h>\n#endif\n";
+
+// Metal header placeholder: MSL/MPS not yet implemented. Emitted by gen_metal.
+pub const METAL_HEADER: &str = "// Metal backend: placeholder, delegates to CUDA\n// TODO(Metal): MSL/MPS kernels not yet implemented\n";
 
 // Launch grid for flat 1D kernels (256 threads/block).
 pub const K_LAUNCH_MACROS: &str = r#"
@@ -839,3 +852,10 @@ pub fn forward_kernels_source() -> &'static str { K_FORWARD_KERNELS }
 pub fn train_kernels_source() -> &'static str { K_TRAIN_KERNELS }
 pub fn runtime_utils_source() -> &'static str { K_RUNTIME_UTILS }
 pub fn runtime_utils_u8_source() -> &'static str { K_RUNTIME_UTILS_U8 }
+
+/// Return the fp16 header snippet (conditional include for half precision).
+pub fn fp16_header_source() -> &'static str { CUDA_FP16_HEADER }
+/// Return the ROCm header snippet.
+pub fn rocm_header_source() -> &'static str { ROCM_HEADER }
+/// Return the Metal header snippet.
+pub fn metal_header_source() -> &'static str { METAL_HEADER }
