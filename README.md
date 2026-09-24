@@ -6,7 +6,15 @@
 The **Glyph** programming language compiler, written in Rust.
 
 Glyph transpiles to C (GNU statement expressions) and builds with GCC or clang into
-plain native binaries.
+plain native binaries. It also hosts **NeuralScript** (`.ns`), a typed AOT tensor
+language for CPU/CUDA code generation.
+
+## Philosophy
+
+Glyphc joins explicit systems programming and typed ML graphs in one inspectable
+toolchain: from source to native artifacts without a mandatory Python or GC
+layer. The project manifesto is available in Russian as
+[Философия Glyphc](docs/philosophy.md).
 
 ```
 ┌──────────┐   glyphc    ┌────────────┐   gcc/clang   ┌─────────┐

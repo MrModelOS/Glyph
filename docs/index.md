@@ -6,10 +6,11 @@ code generation.
 
 ## Start here
 
-1. [Install `glyphc`](https://github.com/MrModelOS/Glyph#install).
-2. Read the [English language reference](language_en.md).
-3. Run `glyphc new hello` and `cd hello && glyphc build`.
-4. For tensor graphs, read the [NeuralScript guide](nns.md).
+1. Read the [Glyphc philosophy](philosophy.md).
+2. [Install `glyphc`](https://github.com/MrModelOS/Glyph#install).
+3. Read the [English language reference](language_en.md).
+4. Run `glyphc new hello` and `cd hello && glyphc build`.
+5. For tensor graphs, read the [NeuralScript guide](nns.md).
 
 The project is MIT-licensed and the compiler, LSP, tests, examples, and release
 artifacts live in the same repository.

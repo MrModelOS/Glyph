@@ -4,6 +4,9 @@
 
 ### Public-release preparation
 
+- Added the official [Glyphc philosophy](docs/philosophy.md), including the
+  Glyph/NeuralScript roles, AI-readable and hardware-first principles, current
+  capability boundaries, and product roadmap.
 - Added `glyphc new`/`init`, a release installer, Dockerfile, and reproducible
   `cargo fmt`/Clippy/docs CI checks.
 - Added English language/NNS/editor/comparison documentation, issue templates,
